@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models import Device
-from app.crud import check_heartbeat_timeout, create_device, DuplicateDeviceError
+from app.crud import check_heartbeat_timeout, create_device, update_heartbeat, DuplicateDeviceError
 from app.schemas import DeviceCreate
 
 SQLALCHEMY_TEST_URL = "sqlite://"
@@ -226,6 +226,122 @@ class TestHeartbeat:
         assert count == 0
         db_session.refresh(device)
         assert device.is_online is False
+
+    def test_heartbeat_stop_lifecycle(self, db_session):
+        """Simulate full lifecycle: device online -> heartbeat stops -> exceeds threshold -> offline.
+
+        Steps:
+        1. Create device, send heartbeats - device stays online
+        2. Stop sending heartbeats (freeze last_heartbeat in time)
+        3. Time passes beyond threshold
+        4. check_heartbeat_timeout detects the gap and marks offline
+        """
+        # Step 1: Device is created and actively heartbeating
+        device = Device(
+            device_id="LIFECYCLE-1",
+            model="RK3588",
+            kernel_version="5.10.110",
+            is_online=True,
+            last_heartbeat=datetime.utcnow(),
+        )
+        db_session.add(device)
+        db_session.commit()
+
+        # Verify: within threshold, device remains online
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 0
+        db_session.refresh(device)
+        assert device.is_online is True
+
+        # Step 2: Simulate heartbeat arriving (like the API /heartbeat call)
+        device.last_heartbeat = datetime.utcnow()
+        db_session.commit()
+
+        # Still online after check
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 0
+        db_session.refresh(device)
+        assert device.is_online is True
+
+        # Step 3: Heartbeat STOPS - simulate time passing beyond threshold
+        # (set last_heartbeat to 50 seconds ago, exceeding the 45s threshold)
+        device.last_heartbeat = datetime.utcnow() - timedelta(seconds=50)
+        db_session.commit()
+
+        # Step 4: Timeout check now detects the device is stale
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 1
+        db_session.refresh(device)
+        assert device.is_online is False
+
+        # Verify: calling check again does NOT re-count (already offline)
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 0
+        db_session.refresh(device)
+        assert device.is_online is False
+
+    def test_heartbeat_stop_then_resume(self, db_session):
+        """Device goes offline after heartbeat stops, then comes back online when heartbeat resumes."""
+        device = Device(
+            device_id="RESUME-1",
+            model="IMX6ULL",
+            kernel_version="5.4.0",
+            is_online=True,
+            last_heartbeat=datetime.utcnow() - timedelta(seconds=60),
+        )
+        db_session.add(device)
+        db_session.commit()
+
+        # Heartbeat stopped - exceeds 45s threshold, goes offline
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 1
+        db_session.refresh(device)
+        assert device.is_online is False
+
+        # Device sends a new heartbeat (simulating update_heartbeat API call)
+        updated = update_heartbeat(db_session, "RESUME-1")
+        assert updated.is_online is True
+        assert (datetime.utcnow() - updated.last_heartbeat).total_seconds() < 2
+
+        # Next timeout check confirms device is still online
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 0
+        db_session.refresh(device)
+        assert device.is_online is True
+
+    def test_heartbeat_stop_via_api_lifecycle(self, client, db_session):
+        """Full API-level test: create -> heartbeat -> stop -> check offline via list filter."""
+        # Create device via API
+        r = client.post("/api/devices/", json={
+            "device_id": "API-LIFE-1",
+            "model": "STM32MP1",
+            "kernel_version": "5.15.0"
+        })
+        assert r.status_code == 201
+        assert r.json()["is_online"] is True
+
+        # Send heartbeat via API - stays online
+        r = client.post("/api/devices/API-LIFE-1/heartbeat")
+        assert r.status_code == 200
+        assert r.json()["is_online"] is True
+
+        # Simulate heartbeat stopping: manually set last_heartbeat to past
+        device = db_session.query(Device).filter(Device.device_id == "API-LIFE-1").first()
+        device.last_heartbeat = datetime.utcnow() - timedelta(seconds=50)
+        db_session.commit()
+
+        # Run timeout check
+        check_heartbeat_timeout(db_session, timeout_seconds=45)
+
+        # API list with filter should now show it as offline
+        r = client.get("/api/devices/?is_online=false")
+        offline_ids = [d["device_id"] for d in r.json()["devices"]]
+        assert "API-LIFE-1" in offline_ids
+
+        # Online filter should NOT contain it
+        r = client.get("/api/devices/?is_online=true")
+        online_ids = [d["device_id"] for d in r.json()["devices"]]
+        assert "API-LIFE-1" not in online_ids
 
 
 class TestConcurrency:
