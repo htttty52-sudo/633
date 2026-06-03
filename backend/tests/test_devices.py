@@ -135,25 +135,25 @@ class TestHeartbeat:
         assert response.json()["is_online"] is True
 
     def test_heartbeat_timeout_marks_offline(self, db_session):
-        """Test: device with stale heartbeat is marked offline after timeout."""
+        """Test: device with stale heartbeat is marked offline after timeout (45s)."""
         device = Device(
             device_id="TIMEOUT-1",
             model="TestModel",
             kernel_version="5.10.0",
             is_online=True,
-            last_heartbeat=datetime.utcnow() - timedelta(seconds=120),
+            last_heartbeat=datetime.utcnow() - timedelta(seconds=60),
         )
         db_session.add(device)
         db_session.commit()
 
-        count = check_heartbeat_timeout(db_session, timeout_seconds=60)
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
         assert count == 1
 
         db_session.refresh(device)
         assert device.is_online is False
 
     def test_heartbeat_within_timeout_stays_online(self, db_session):
-        """Test: device with recent heartbeat remains online."""
+        """Test: device with recent heartbeat (within 45s) remains online."""
         device = Device(
             device_id="ALIVE-1",
             model="TestModel",
@@ -164,15 +164,33 @@ class TestHeartbeat:
         db_session.add(device)
         db_session.commit()
 
-        count = check_heartbeat_timeout(db_session, timeout_seconds=60)
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
+        assert count == 0
+
+        db_session.refresh(device)
+        assert device.is_online is True
+
+    def test_device_recovers_online_after_heartbeat(self, db_session):
+        """Test: an offline device is set back online when heartbeat is within threshold."""
+        device = Device(
+            device_id="RECOVER-1",
+            model="TestModel",
+            kernel_version="5.10.0",
+            is_online=False,
+            last_heartbeat=datetime.utcnow() - timedelta(seconds=10),
+        )
+        db_session.add(device)
+        db_session.commit()
+
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
         assert count == 0
 
         db_session.refresh(device)
         assert device.is_online is True
 
     def test_multiple_devices_timeout(self, db_session):
-        """Test: multiple devices with different heartbeat ages."""
-        stale_time = datetime.utcnow() - timedelta(seconds=120)
+        """Test: multiple devices with different heartbeat ages relative to 45s threshold."""
+        stale_time = datetime.utcnow() - timedelta(seconds=60)
         fresh_time = datetime.utcnow() - timedelta(seconds=5)
 
         devices = [
@@ -183,7 +201,7 @@ class TestHeartbeat:
         db_session.add_all(devices)
         db_session.commit()
 
-        count = check_heartbeat_timeout(db_session, timeout_seconds=60)
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
         assert count == 2
 
         for d in devices[:2]:
@@ -193,7 +211,7 @@ class TestHeartbeat:
         assert devices[2].is_online is True
 
     def test_already_offline_not_counted(self, db_session):
-        """Already-offline devices are not re-counted."""
+        """Already-offline devices with stale heartbeat are not re-counted."""
         device = Device(
             device_id="ALREADY-OFF",
             model="X",
@@ -204,8 +222,10 @@ class TestHeartbeat:
         db_session.add(device)
         db_session.commit()
 
-        count = check_heartbeat_timeout(db_session, timeout_seconds=60)
+        count = check_heartbeat_timeout(db_session, timeout_seconds=45)
         assert count == 0
+        db_session.refresh(device)
+        assert device.is_online is False
 
 
 class TestConcurrency:
@@ -245,11 +265,14 @@ class TestConcurrency:
         assert response.json()["total"] == 10
 
     def test_duplicate_device_id_via_api(self, client):
-        """Test: API returns 409 on duplicate device_id."""
+        """Test: API returns 409 with error_code on duplicate device_id."""
         payload = {"device_id": "RACE-1", "model": "X", "kernel_version": "5.0"}
         r1 = client.post("/api/devices/", json=payload)
         assert r1.status_code == 201
 
         r2 = client.post("/api/devices/", json=payload)
         assert r2.status_code == 409
-        assert "already exists" in r2.json()["detail"]
+        detail = r2.json()["detail"]
+        assert detail["error_code"] == "DEVICE_ID_DUPLICATE"
+        assert detail["device_id"] == "RACE-1"
+        assert "already exists" in detail["message"]

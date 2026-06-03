@@ -20,9 +20,10 @@ export default function CreateDeviceModal({ onClose, onCreated }) {
       onClose()
     } catch (err) {
       if (err.response?.status === 409) {
-        setError(`设备ID "${form.device_id}" 已存在`)
+        const detail = err.response.data?.detail
+        setError(detail?.message || `设备ID "${form.device_id}" 已存在`)
       } else {
-        setError(err.response?.data?.detail || '创建失败')
+        setError(err.response?.data?.detail?.message || err.response?.data?.detail || '创建失败')
       }
     } finally {
       setLoading(false)

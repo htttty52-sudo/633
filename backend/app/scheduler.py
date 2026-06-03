@@ -1,6 +1,6 @@
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
@@ -8,7 +8,6 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import Device
 from app.config import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
-from app.crud import check_heartbeat_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -16,19 +15,21 @@ scheduler = BackgroundScheduler()
 
 
 def simulate_heartbeat():
-    """Every HEARTBEAT_INTERVAL seconds, randomly update device heartbeats to simulate real devices."""
+    """Simulate device heartbeats: only update last_heartbeat for devices still within the timeout window.
+    Devices that have already timed out won't randomly come back online."""
     db = SessionLocal()
     try:
         devices = db.execute(select(Device)).scalars().all()
         if not devices:
             return
 
+        now = datetime.utcnow()
         for device in devices:
-            # 70% chance the device sends a heartbeat (stays online)
-            if random.random() < 0.7:
-                device.last_heartbeat = datetime.utcnow()
-                device.is_online = True
-            # 30% chance no heartbeat - will eventually time out
+            elapsed = (now - device.last_heartbeat).total_seconds()
+            if elapsed < HEARTBEAT_TIMEOUT:
+                # Device is within the threshold - randomly decide if it sends a heartbeat
+                if random.random() < 0.7:
+                    device.last_heartbeat = now
 
         db.commit()
         logger.info(f"Heartbeat simulation completed for {len(devices)} devices")
@@ -40,12 +41,28 @@ def simulate_heartbeat():
 
 
 def check_offline_devices():
-    """Check for devices that have timed out and mark them offline."""
+    """Compare current time with each device's last_heartbeat.
+    If the difference exceeds HEARTBEAT_TIMEOUT, mark as offline; otherwise mark as online."""
     db = SessionLocal()
     try:
-        count = check_heartbeat_timeout(db, HEARTBEAT_TIMEOUT)
-        if count > 0:
-            logger.info(f"Marked {count} devices as offline due to heartbeat timeout")
+        devices = db.execute(select(Device)).scalars().all()
+        if not devices:
+            return
+
+        now = datetime.utcnow()
+        changed = 0
+        for device in devices:
+            elapsed = (now - device.last_heartbeat).total_seconds()
+            new_status = elapsed <= HEARTBEAT_TIMEOUT
+            if device.is_online != new_status:
+                device.is_online = new_status
+                changed += 1
+
+        if changed > 0:
+            db.commit()
+            logger.info(f"Status updated: {changed} devices changed (timeout={HEARTBEAT_TIMEOUT}s)")
+        else:
+            db.commit()
     except Exception as e:
         db.rollback()
         logger.error(f"Offline check error: {e}")

@@ -23,7 +23,10 @@ def api_create_device(device_data: DeviceCreate, db: Session = Depends(get_db)):
     try:
         device = create_device(db, device_data)
     except DuplicateDeviceError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(
+            status_code=409,
+            detail={"error_code": e.error_code, "message": str(e), "device_id": e.device_id},
+        )
     return device
 
 

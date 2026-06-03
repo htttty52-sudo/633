@@ -10,6 +10,8 @@ from app.schemas import DeviceCreate, DeviceUpdate
 
 
 class DuplicateDeviceError(Exception):
+    error_code = "DEVICE_ID_DUPLICATE"
+
     def __init__(self, device_id: str):
         self.device_id = device_id
         super().__init__(f"Device with ID '{device_id}' already exists")
@@ -85,20 +87,23 @@ def update_heartbeat(db: Session, device_id: str) -> Optional[Device]:
 
 
 def check_heartbeat_timeout(db: Session, timeout_seconds: int) -> int:
-    """Mark devices as offline if heartbeat exceeds timeout. Returns count of affected devices."""
-    threshold = datetime.utcnow()
+    """Check all devices: mark offline if last_heartbeat exceeds timeout, keep online otherwise.
+    Returns count of devices newly marked offline."""
     from datetime import timedelta
-    threshold = threshold - timedelta(seconds=timeout_seconds)
+    now = datetime.utcnow()
+    threshold = now - timedelta(seconds=timeout_seconds)
 
-    devices = db.execute(
-        select(Device).where(Device.is_online == True, Device.last_heartbeat < threshold)
-    ).scalars().all()
+    devices = db.execute(select(Device)).scalars().all()
 
-    count = 0
+    offline_count = 0
     for device in devices:
-        device.is_online = False
-        count += 1
+        if device.last_heartbeat < threshold:
+            if device.is_online:
+                device.is_online = False
+                offline_count += 1
+        else:
+            if not device.is_online:
+                device.is_online = True
 
-    if count > 0:
-        db.commit()
-    return count
+    db.commit()
+    return offline_count
