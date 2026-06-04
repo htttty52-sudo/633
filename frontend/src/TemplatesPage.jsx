@@ -193,18 +193,18 @@ function TemplateDetail({ template, onUpdated }) {
   const [devices, setDevices] = useState([])
   const [bindings, setBindings] = useState([])
   const [selectedDevice, setSelectedDevice] = useState('')
-  const [previewResult, setPreviewResult] = useState(null)
-  const [previewError, setPreviewError] = useState(null)
   const [yamlError, setYamlError] = useState(null)
+  const [livePreview, setLivePreview] = useState(null)
+  const [livePreviewError, setLivePreviewError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [deployments, setDeployments] = useState({})
-  const validateTimer = useRef(null)
+  const liveTimer = useRef(null)
 
   useEffect(() => {
     setContent(template.content)
-    setPreviewResult(null)
-    setPreviewError(null)
     setYamlError(null)
+    setLivePreview(null)
+    setLivePreviewError(null)
     loadBindings()
     loadDevices()
   }, [template.id])
@@ -229,19 +229,39 @@ function TemplateDetail({ template, onUpdated }) {
 
   const handleContentChange = (value) => {
     setContent(value)
-    if (validateTimer.current) clearTimeout(validateTimer.current)
+    if (liveTimer.current) clearTimeout(liveTimer.current)
     if (!value.trim()) {
       setYamlError(null)
+      setLivePreview(null)
+      setLivePreviewError(null)
       return
     }
-    validateTimer.current = setTimeout(async () => {
+    liveTimer.current = setTimeout(() => runLiveCheck(value), 300)
+  }
+
+  const runLiveCheck = async (value) => {
+    try {
+      const syntaxResult = await validateTemplate(value)
+      setYamlError(syntaxResult.valid ? null : syntaxResult.error)
+    } catch {
+      setYamlError(null)
+    }
+
+    if (bindings.length > 0) {
+      const firstDevice = bindings[0].device_id
       try {
-        const result = await validateTemplate(value)
-        setYamlError(result.valid ? null : result.error)
-      } catch {
-        setYamlError(null)
+        const result = await renderPreview(template.id, firstDevice)
+        setLivePreview(result)
+        setLivePreviewError(null)
+      } catch (err) {
+        setLivePreview(null)
+        if (err.response?.status === 422) {
+          setLivePreviewError(err.response.data.detail)
+        } else {
+          setLivePreviewError({ error_type: 'request_error', message: err.message, details: {} })
+        }
       }
-    }, 500)
+    }
   }
 
   const handleSave = async () => {
@@ -250,6 +270,9 @@ function TemplateDetail({ template, onUpdated }) {
       const updated = await updateTemplate(template.id, { content })
       onUpdated(updated)
       await loadBindings()
+      if (bindings.length > 0) {
+        runLiveCheck(content)
+      }
     } catch (err) {
       alert('保存失败: ' + (err.response?.data?.detail || err.message))
     } finally {
@@ -275,21 +298,6 @@ function TemplateDetail({ template, onUpdated }) {
       await loadBindings()
     } catch (err) {
       alert('解绑失败: ' + (err.response?.data?.detail || err.message))
-    }
-  }
-
-  const handlePreview = async (deviceId) => {
-    setPreviewResult(null)
-    setPreviewError(null)
-    try {
-      const result = await renderPreview(template.id, deviceId)
-      setPreviewResult(result)
-    } catch (err) {
-      if (err.response?.status === 422) {
-        setPreviewError(err.response.data.detail)
-      } else {
-        setPreviewError({ error_type: 'request_error', message: err.message, details: {} })
-      }
     }
   }
 
@@ -334,6 +342,44 @@ function TemplateDetail({ template, onUpdated }) {
         {yamlError && (
           <div className="yaml-live-error">{yamlError}</div>
         )}
+
+        {livePreview && !yamlError && (
+          <div className="live-preview-panel">
+            <div className="live-preview-header">
+              <span className="live-preview-label">实时渲染 (设备: {bindings[0]?.device_id})</span>
+              <code className="live-preview-hash">{livePreview.config_hash.substring(0, 12)}...</code>
+            </div>
+            <pre className="rendered-output rendered-output-sm">{livePreview.rendered_content}</pre>
+          </div>
+        )}
+        {livePreviewError && (
+          <div className="render-error render-error-inline">
+            <div className="error-type">
+              {livePreviewError.error_type === 'syntax_error' && 'Jinja2 语法错误'}
+              {livePreviewError.error_type === 'missing_variable' && '变量未定义'}
+              {livePreviewError.error_type === 'invalid_yaml_output' && '渲染输出非法YAML'}
+              {livePreviewError.error_type === 'request_error' && '请求错误'}
+            </div>
+            <div className="error-message">{livePreviewError.message}</div>
+            {livePreviewError.details?.line && (
+              <div className="error-location">
+                <span className="error-line-badge">Line {livePreviewError.details.line}</span>
+                <span>{livePreviewError.details.description}</span>
+              </div>
+            )}
+            {livePreviewError.details?.available_variables && (
+              <div className="error-hint">
+                <strong>可用变量:</strong> {livePreviewError.details.available_variables.map((v) => (
+                  <code key={v} className="var-tag">{`{{ ${v} }}`}</code>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {bindings.length === 0 && content.trim() && !yamlError && (
+          <div className="live-preview-hint">绑定设备后可实时预览渲染结果</div>
+        )}
+
         <div className="editor-actions">
           <button className="btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? '保存中...' : '保存（更新绑定哈希）'}
@@ -367,7 +413,6 @@ function TemplateDetail({ template, onUpdated }) {
                 <BindingRow
                   key={b.id}
                   binding={b}
-                  onPreview={() => handlePreview(b.device_id)}
                   onDeploy={() => handleDeploy(b.id)}
                   onUnbind={() => handleUnbind(b.id)}
                   onLoadHistory={() => loadDeploymentHistory(b.id)}
@@ -378,52 +423,11 @@ function TemplateDetail({ template, onUpdated }) {
           </table>
         )}
       </div>
-
-      {(previewResult || previewError) && (
-        <div className="detail-section">
-          <h4>渲染预览</h4>
-          {previewResult && (
-            <div className="preview-panel">
-              <div className="preview-meta">
-                <span>Hash: <code>{previewResult.config_hash.substring(0, 16)}...</code></span>
-                <span className="preview-vars">
-                  注入变量: {Object.entries(previewResult.variables_used).map(([k, v]) => `${k}="${v}"`).join(', ')}
-                </span>
-              </div>
-              <pre className="rendered-output">{previewResult.rendered_content}</pre>
-            </div>
-          )}
-          {previewError && (
-            <div className="render-error">
-              <div className="error-type">
-                {previewError.error_type === 'syntax_error' && 'Jinja2 模板语法错误'}
-                {previewError.error_type === 'missing_variable' && 'Jinja2 变量未定义'}
-                {previewError.error_type === 'invalid_yaml_output' && '渲染结果不是有效YAML'}
-                {previewError.error_type === 'request_error' && '请求错误'}
-              </div>
-              <div className="error-message">{previewError.message}</div>
-              {previewError.details?.line && (
-                <div className="error-location">
-                  <span className="error-line-badge">Line {previewError.details.line}</span>
-                  <span>{previewError.details.description}</span>
-                </div>
-              )}
-              {previewError.details?.available_variables && (
-                <div className="error-hint">
-                  <strong>可用变量:</strong> {previewError.details.available_variables.map((v) => (
-                    <code key={v} className="var-tag">{`{{ ${v} }}`}</code>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
 
-function BindingRow({ binding, onPreview, onDeploy, onUnbind, onLoadHistory, deployments }) {
+function BindingRow({ binding, onDeploy, onUnbind, onLoadHistory, deployments }) {
   const [expanded, setExpanded] = useState(true)
   const isMatch = binding.expected_config_hash && binding.expected_config_hash === binding.current_config_hash
 
@@ -445,7 +449,6 @@ function BindingRow({ binding, onPreview, onDeploy, onUnbind, onLoadHistory, dep
           </div>
         </td>
         <td className="binding-actions">
-          <button className="btn-sm btn-secondary" onClick={onPreview}>预览</button>
           <button className="btn-sm btn-primary" onClick={onDeploy}>下发</button>
           <button className="btn-sm btn-danger" onClick={onUnbind}>解绑</button>
           {deployments.length > 0 && (
@@ -467,6 +470,9 @@ function BindingRow({ binding, onPreview, onDeploy, onUnbind, onLoadHistory, dep
                   </span>
                   <span className="deploy-time">{new Date(d.created_at).toLocaleString('zh-CN')}</span>
                   {d.error_message && <span className="deploy-error">{d.error_message}</span>}
+                  {d.status === 'failed' && (
+                    <button className="btn-sm btn-retry" onClick={onDeploy}>重新下发</button>
+                  )}
                 </div>
               ))}
               {deployments.length > 5 && (
