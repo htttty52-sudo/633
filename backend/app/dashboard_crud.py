@@ -28,6 +28,12 @@ def cache_expected_hash(device_id: str, expected_hash: str):
     r.set(f"{EXPECTED_HASH_PREFIX}{device_id}", expected_hash)
 
 
+def remove_expected_hash(device_id: str):
+    """Remove a device's expected hash from Redis when binding is deleted."""
+    r = get_redis()
+    r.delete(f"{EXPECTED_HASH_PREFIX}{device_id}")
+
+
 def get_drift_data(db: Session, skip: int = 0, limit: int = 50, drifted_only: bool = False) -> dict:
     """Drift detection: reads expected hashes from Redis, compares with DB current hashes."""
     r = get_redis()

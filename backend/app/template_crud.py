@@ -1,5 +1,4 @@
 import random
-import hashlib
 from datetime import datetime
 from typing import Optional
 
@@ -9,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.models import Device
 from app.template_models import ConfigTemplate, TemplateBinding, DeploymentTask
-from app.template_engine import render_template, compute_config_hash, get_device_variables, TemplateRenderError
+from app.template_engine import (
+    render_template, compute_config_hash, get_device_variables,
+    TemplateRenderError, compute_field_diff_count, simulate_device_config,
+)
 from app.template_schemas import TemplateCreate, TemplateUpdate, BindingCreate
 
 
@@ -101,11 +103,16 @@ def _recalculate_binding_hashes(db: Session, template: ConfigTemplate):
             rendered = render_template(template.content, variables)
             new_hash = compute_config_hash(rendered)
             binding.expected_config_hash = new_hash
-            # Sync updated hash to Redis
+            binding.rendered_config = rendered
+            # Recompute field diff against current config
+            binding.drift_field_count = compute_field_diff_count(rendered, binding.current_config)
+            # Immediately sync to Redis
             from app.dashboard_crud import cache_expected_hash
             cache_expected_hash(binding.device_id, new_hash)
         except TemplateRenderError:
             binding.expected_config_hash = None
+            binding.rendered_config = None
+            binding.drift_field_count = 0
 
 
 def delete_template(db: Session, template_id: int) -> bool:
@@ -129,20 +136,33 @@ def create_binding(db: Session, data: BindingCreate) -> TemplateBinding:
         raise ValueError(f"Device '{data.device_id}' not found")
 
     variables = get_device_variables(device)
+    rendered = None
+    expected_hash = None
     try:
         rendered = render_template(template.content, variables)
         expected_hash = compute_config_hash(rendered)
     except TemplateRenderError:
-        expected_hash = None
+        pass
 
-    # Simulate stale config: current hash differs from expected
-    current_hash = hashlib.sha256(f"stale-{data.device_id}-{datetime.utcnow().isoformat()}".encode()).hexdigest()
+    # Simulate device current config with random field mutations
+    drift_fields = random.randint(0, 5)
+    if rendered and drift_fields > 0:
+        current_cfg = simulate_device_config(rendered, drift_fields)
+    else:
+        current_cfg = rendered
+        drift_fields = 0
+
+    current_hash = compute_config_hash(current_cfg) if current_cfg else None
+    actual_diff = compute_field_diff_count(rendered, current_cfg) if rendered and current_cfg else 0
 
     binding = TemplateBinding(
         template_id=data.template_id,
         device_id=data.device_id,
         expected_config_hash=expected_hash,
         current_config_hash=current_hash,
+        rendered_config=rendered,
+        current_config=current_cfg,
+        drift_field_count=actual_diff,
     )
     db.add(binding)
     try:
@@ -152,7 +172,7 @@ def create_binding(db: Session, data: BindingCreate) -> TemplateBinding:
         db.rollback()
         raise DuplicateBindingError(data.template_id, data.device_id)
 
-    # Cache expected hash in Redis for fast drift detection
+    # Immediately cache expected hash in Redis
     if expected_hash:
         from app.dashboard_crud import cache_expected_hash
         cache_expected_hash(data.device_id, expected_hash)
@@ -187,8 +207,14 @@ def delete_binding(db: Session, binding_id: int) -> bool:
     binding = get_binding(db, binding_id)
     if not binding:
         return False
+    device_id = binding.device_id
     db.delete(binding)
     db.commit()
+
+    # Immediately remove expected hash from Redis
+    from app.dashboard_crud import remove_expected_hash
+    remove_expected_hash(device_id)
+
     return True
 
 

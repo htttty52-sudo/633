@@ -1,5 +1,6 @@
 import random
 import logging
+import threading
 from datetime import datetime
 
 import redis as redis_lib
@@ -12,10 +13,10 @@ from app.config import OTA_UPGRADE_SUCCESS_RATE
 
 logger = logging.getLogger(__name__)
 
-# Redis key for the SET of all processed task IDs
 PROCESSED_SET_KEY = "ota:processed_task_ids"
-# Redis key prefix for per-task processing lock
 TASK_LOCK_PREFIX = "ota:lock:task:"
+LOCK_INITIAL_TTL = 15
+LOCK_RENEW_INTERVAL = 5
 
 OTA_FAILURE_MESSAGES = [
     "Firmware download timeout: device unreachable",
@@ -29,21 +30,50 @@ OTA_FAILURE_MESSAGES = [
 ]
 
 
+class LockRenewer:
+    """Renews a Redis key's TTL every interval until stopped."""
+
+    def __init__(self, r: redis_lib.Redis, lock_key: str, interval: int = LOCK_RENEW_INTERVAL):
+        self._r = r
+        self._lock_key = lock_key
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join(timeout=2)
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            self._stop_event.wait(timeout=self._interval)
+            if self._stop_event.is_set():
+                break
+            self._r.expire(self._lock_key, LOCK_INITIAL_TTL)
+
+
 def process_message(db: Session, r: redis_lib.Redis, fields: dict, worker_name: str):
     ota_device_task_id = int(fields["ota_device_task_id"])
     task_id_str = str(ota_device_task_id)
 
-    # Step 1: Check if this task ID was already processed (Redis SET lookup)
+    # Step 1: Already processed? Skip.
     if r.sismember(PROCESSED_SET_KEY, task_id_str):
         logger.info(f"[{worker_name}] SKIP already processed task_id={ota_device_task_id}")
         return
 
-    # Step 2: Acquire per-task lock (SET NX with TTL) to prevent concurrent processing
+    # Step 2: Acquire lock (SET NX with initial TTL, renewed by background thread)
     lock_key = f"{TASK_LOCK_PREFIX}{ota_device_task_id}"
-    acquired = r.set(lock_key, worker_name, nx=True, ex=120)
+    acquired = r.set(lock_key, worker_name, nx=True, ex=LOCK_INITIAL_TTL)
     if not acquired:
         logger.info(f"[{worker_name}] SKIP locked by another worker task_id={ota_device_task_id}")
         return
+
+    # Start lock renewal thread
+    renewer = LockRenewer(r, lock_key)
+    renewer.start()
 
     logger.info(f"[{worker_name}] Processing task_id={ota_device_task_id}")
 
@@ -51,7 +81,6 @@ def process_message(db: Session, r: redis_lib.Redis, fields: dict, worker_name: 
         device_task = db.get(OtaDeviceTask, ota_device_task_id)
         if not device_task or device_task.status != "upgrading":
             logger.warning(f"[{worker_name}] task_id={ota_device_task_id} not in 'upgrading' state, marking done")
-            # Still mark as processed so we don't retry
             r.sadd(PROCESSED_SET_KEY, task_id_str)
             return
 
@@ -72,12 +101,14 @@ def process_message(db: Session, r: redis_lib.Redis, fields: dict, worker_name: 
 
         db.commit()
 
-        # Step 3: After successful DB commit, record this task as processed
+        # Mark as processed
         r.sadd(PROCESSED_SET_KEY, task_id_str)
-        logger.info(f"[{worker_name}] DONE task_id={ota_device_task_id} recorded in processed set")
+        logger.info(f"[{worker_name}] DONE task_id={ota_device_task_id}")
 
     except Exception as e:
         db.rollback()
-        # Release lock on error so another worker can retry
-        r.delete(lock_key)
         raise
+    finally:
+        # Stop renewal and release lock
+        renewer.stop()
+        r.delete(lock_key)

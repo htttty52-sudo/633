@@ -66,3 +66,55 @@ def render_template(template_content: str, variables: dict) -> str:
 
 def compute_config_hash(rendered_content: str) -> str:
     return hashlib.sha256(rendered_content.encode("utf-8")).hexdigest()
+
+
+def parse_config_fields(config_text: str) -> dict[str, str]:
+    """Parse a KEY=VALUE config into a dict. Ignores comments and blank lines."""
+    fields = {}
+    for line in config_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def compute_field_diff_count(expected_config: str, current_config: str) -> int:
+    """Compare two configs field-by-field, return number of differing fields."""
+    if not expected_config or not current_config:
+        return 0
+    expected_fields = parse_config_fields(expected_config)
+    current_fields = parse_config_fields(current_config)
+    all_keys = set(expected_fields.keys()) | set(current_fields.keys())
+    diff_count = 0
+    for key in all_keys:
+        if expected_fields.get(key) != current_fields.get(key):
+            diff_count += 1
+    return diff_count
+
+
+def simulate_device_config(rendered_config: str, drift_count: int) -> str:
+    """Simulate a device's current config by mutating N random fields from the expected config."""
+    if drift_count == 0:
+        return rendered_config
+
+    import random
+    lines = rendered_config.splitlines()
+    mutable_indices = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            mutable_indices.append(i)
+
+    if not mutable_indices:
+        return rendered_config
+
+    to_mutate = random.sample(mutable_indices, min(drift_count, len(mutable_indices)))
+    result = lines[:]
+    for idx in to_mutate:
+        key, _, value = result[idx].partition("=")
+        result[idx] = f"{key}=DRIFTED_{random.randint(100, 999)}"
+
+    return "\n".join(result)

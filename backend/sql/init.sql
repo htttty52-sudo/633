@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS template_bindings (
     device_id VARCHAR(64) NOT NULL,
     expected_config_hash VARCHAR(64),
     current_config_hash VARCHAR(64),
+    rendered_config TEXT,
+    current_config TEXT,
     drift_field_count INT NOT NULL DEFAULT 0,
     bound_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_template_device (template_id, device_id),

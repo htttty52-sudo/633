@@ -4,7 +4,6 @@ Syncs expected hashes to Redis for fast drift detection.
 Run: python -m scripts.seed_devices
 """
 import random
-import hashlib
 import sys
 from datetime import datetime, timedelta
 
@@ -13,6 +12,10 @@ from sqlalchemy import select, func
 from app.database import SessionLocal, engine, Base
 from app.models import Device
 from app.template_models import ConfigTemplate, TemplateBinding
+from app.template_engine import (
+    render_template, compute_config_hash, get_device_variables,
+    simulate_device_config, compute_field_diff_count,
+)
 from app.dashboard_crud import sync_expected_hashes_to_redis
 import app.ota_models  # noqa: F401
 
@@ -92,7 +95,7 @@ def seed():
         db.flush()
         print(f"Devices created: {created}")
 
-        # Create bindings (80% of devices) with drift_field_count
+        # Create bindings (80% of devices) with real field-by-field drift
         binding_count = 0
         for i in range(DEVICE_COUNT):
             if random.random() > 0.8:
@@ -111,24 +114,39 @@ def seed():
             if existing_binding:
                 continue
 
-            expected = hashlib.sha256(f"{model}-{kv}-expected".encode()).hexdigest()
+            # Render the expected config from template
+            template = templates[model]
 
-            # 40% have drift — assign random drift field count (1-10)
+            class FakeDevice:
+                pass
+            fake = FakeDevice()
+            fake.device_id = device_id
+            fake.model = model
+            fake.kernel_version = kv
+            fake.is_online = True
+
+            variables = get_device_variables(fake)
+            rendered = render_template(template.content, variables)
+            expected_hash = compute_config_hash(rendered)
+
+            # 40% have drift — mutate random fields in the config
             if random.random() < 0.4:
-                current = hashlib.sha256(
-                    f"{device_id}-stale-{random.random()}".encode()
-                ).hexdigest()
-                drift_fields = random.randint(1, 10)
+                drift_target = random.randint(1, 4)
+                current_cfg = simulate_device_config(rendered, drift_target)
             else:
-                current = expected
-                drift_fields = 0
+                current_cfg = rendered
+
+            current_hash = compute_config_hash(current_cfg)
+            actual_diff = compute_field_diff_count(rendered, current_cfg)
 
             binding = TemplateBinding(
-                template_id=templates[model].id,
+                template_id=template.id,
                 device_id=device_id,
-                expected_config_hash=expected,
-                current_config_hash=current,
-                drift_field_count=drift_fields,
+                expected_config_hash=expected_hash,
+                current_config_hash=current_hash,
+                rendered_config=rendered,
+                current_config=current_cfg,
+                drift_field_count=actual_diff,
             )
             db.add(binding)
             binding_count += 1

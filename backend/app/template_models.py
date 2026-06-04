@@ -28,6 +28,8 @@ class TemplateBinding(Base):
     device_id: Mapped[str] = mapped_column(String(64), ForeignKey("devices.device_id"), nullable=False)
     expected_config_hash: Mapped[str] = mapped_column(String(64), nullable=True)
     current_config_hash: Mapped[str] = mapped_column(String(64), nullable=True)
+    rendered_config: Mapped[str] = mapped_column(Text, nullable=True)
+    current_config: Mapped[str] = mapped_column(Text, nullable=True)
     drift_field_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     bound_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
