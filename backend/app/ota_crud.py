@@ -3,7 +3,6 @@ import random
 import hashlib
 import logging
 import threading
-import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import Device
 from app.ota_models import Firmware, OtaTask, OtaDeviceTask
 from app.ota_schemas import FirmwareCreate, OtaTaskCreate
-from app.config import OTA_UPGRADE_SUCCESS_RATE, OTA_BATCH_TIMEOUT, OTA_RETRY_BASE_DELAY
+from app.config import OTA_RETRY_BASE_DELAY
 from app.redis_client import get_redis
 from app.redis_streams import publish_device_task
 from app.idempotency import generate_idempotency_key
