@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
 from app.routes import router
+from app.template_routes import router as template_router
 from app.scheduler import start_scheduler, stop_scheduler
+import app.template_models  # noqa: F401 - ensure tables are created
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(template_router)
 
 
 @app.get("/api/health")
