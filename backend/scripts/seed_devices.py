@@ -1,5 +1,6 @@
 """
 Generate 1000 simulated devices across multiple models with template bindings.
+Syncs expected hashes to Redis for fast drift detection.
 Run: python -m scripts.seed_devices
 """
 import random
@@ -12,6 +13,7 @@ from sqlalchemy import select, func
 from app.database import SessionLocal, engine, Base
 from app.models import Device
 from app.template_models import ConfigTemplate, TemplateBinding
+from app.dashboard_crud import sync_expected_hashes_to_redis
 import app.ota_models  # noqa: F401
 
 MODELS = ["RK3588", "IMX6ULL", "STM32MP1", "AllwinnerH6", "AM335x"]
@@ -27,6 +29,9 @@ def seed():
         existing_count = db.execute(select(func.count()).select_from(Device)).scalar()
         if existing_count >= DEVICE_COUNT:
             print(f"Already have {existing_count} devices, skipping seed.")
+            # Still sync hashes to Redis
+            count = sync_expected_hashes_to_redis(db)
+            print(f"Synced {count} expected hashes to Redis.")
             return
 
         # Create templates (one per model)
@@ -80,7 +85,6 @@ def seed():
             db.add(d)
             created += 1
 
-            # Batch commit every 100
             if created % 100 == 0:
                 db.flush()
                 print(f"  Created {created} devices...")
@@ -88,7 +92,7 @@ def seed():
         db.flush()
         print(f"Devices created: {created}")
 
-        # Create bindings (80% of devices)
+        # Create bindings (80% of devices) with drift_field_count
         binding_count = 0
         for i in range(DEVICE_COUNT):
             if random.random() > 0.8:
@@ -108,19 +112,23 @@ def seed():
                 continue
 
             expected = hashlib.sha256(f"{model}-{kv}-expected".encode()).hexdigest()
-            # 40% have drift
+
+            # 40% have drift — assign random drift field count (1-10)
             if random.random() < 0.4:
                 current = hashlib.sha256(
                     f"{device_id}-stale-{random.random()}".encode()
                 ).hexdigest()
+                drift_fields = random.randint(1, 10)
             else:
                 current = expected
+                drift_fields = 0
 
             binding = TemplateBinding(
                 template_id=templates[model].id,
                 device_id=device_id,
                 expected_config_hash=expected,
                 current_config_hash=current,
+                drift_field_count=drift_fields,
             )
             db.add(binding)
             binding_count += 1
@@ -130,6 +138,10 @@ def seed():
 
         db.commit()
         print(f"Bindings created: {binding_count}")
+
+        # Sync all expected hashes to Redis
+        count = sync_expected_hashes_to_redis(db)
+        print(f"Synced {count} expected hashes to Redis.")
         print(f"Seed complete: {DEVICE_COUNT} devices, ~{binding_count} bindings, ~{int(binding_count*0.4)} drifted")
 
     except Exception as e:

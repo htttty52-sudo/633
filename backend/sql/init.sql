@@ -33,13 +33,15 @@ CREATE TABLE IF NOT EXISTS template_bindings (
     device_id VARCHAR(64) NOT NULL,
     expected_config_hash VARCHAR(64),
     current_config_hash VARCHAR(64),
+    drift_field_count INT NOT NULL DEFAULT 0,
     bound_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_template_device (template_id, device_id),
     FOREIGN KEY (template_id) REFERENCES config_templates(id),
     FOREIGN KEY (device_id) REFERENCES devices(device_id),
     INDEX idx_binding_device (device_id),
     INDEX idx_binding_template (template_id),
-    INDEX idx_binding_hashes (device_id, expected_config_hash, current_config_hash)
+    INDEX idx_binding_hashes (device_id, expected_config_hash, current_config_hash),
+    INDEX idx_binding_drift_fields (drift_field_count)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS deployment_tasks (

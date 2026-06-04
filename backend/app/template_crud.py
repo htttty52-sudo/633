@@ -99,7 +99,11 @@ def _recalculate_binding_hashes(db: Session, template: ConfigTemplate):
         variables = get_device_variables(device)
         try:
             rendered = render_template(template.content, variables)
-            binding.expected_config_hash = compute_config_hash(rendered)
+            new_hash = compute_config_hash(rendered)
+            binding.expected_config_hash = new_hash
+            # Sync updated hash to Redis
+            from app.dashboard_crud import cache_expected_hash
+            cache_expected_hash(binding.device_id, new_hash)
         except TemplateRenderError:
             binding.expected_config_hash = None
 
@@ -147,6 +151,12 @@ def create_binding(db: Session, data: BindingCreate) -> TemplateBinding:
     except IntegrityError:
         db.rollback()
         raise DuplicateBindingError(data.template_id, data.device_id)
+
+    # Cache expected hash in Redis for fast drift detection
+    if expected_hash:
+        from app.dashboard_crud import cache_expected_hash
+        cache_expected_hash(data.device_id, expected_hash)
+
     return binding
 
 

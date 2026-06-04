@@ -9,6 +9,7 @@ class DriftDevice(BaseModel):
     expected_hash: Optional[str] = None
     current_hash: Optional[str] = None
     is_drifted: bool
+    drift_field_count: int = 0
 
 
 class DriftResponse(BaseModel):
@@ -23,6 +24,8 @@ class HeatmapCell(BaseModel):
     model: str
     kernel_version: str
     count: int
+    avg_drift_fields: float
+    max_drift_fields: int
     drift_ratio: float
 
 

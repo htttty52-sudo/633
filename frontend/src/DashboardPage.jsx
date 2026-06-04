@@ -6,7 +6,9 @@ function ConfigHeatmap({ data }) {
     return <div className="dashboard-empty">暂无热力图数据</div>
   }
 
+  // Color based on average drift field count (normalized 0-1 by drift_ratio from backend)
   const getColor = (ratio) => {
+    if (ratio === 0) return 'rgba(82, 196, 26, 0.85)'
     if (ratio <= 0.5) {
       const r = Math.round(82 + (250 - 82) * ratio * 2)
       const g = Math.round(196 - (196 - 173) * ratio * 2)
@@ -43,7 +45,7 @@ function ConfigHeatmap({ data }) {
                   key={`${model}-${kv}`}
                   className="heatmap-cell"
                   style={{ backgroundColor: cell ? getColor(cell.drift_ratio) : '#f0f0f0' }}
-                  title={cell ? `${cell.count} 台设备, ${(cell.drift_ratio * 100).toFixed(0)}% 漂移` : '无设备'}
+                  title={cell ? `${cell.count} 台设备, 平均差异 ${cell.avg_drift_fields} 字段, 最大 ${cell.max_drift_fields} 字段` : '无设备'}
                 >
                   {cell ? cell.count : '-'}
                 </div>
@@ -53,10 +55,10 @@ function ConfigHeatmap({ data }) {
         ))}
       </div>
       <div className="heatmap-legend">
-        <span className="legend-label">漂移程度:</span>
-        <span className="legend-item" style={{ backgroundColor: 'rgba(82, 196, 26, 0.85)' }}>0%</span>
-        <span className="legend-item" style={{ backgroundColor: 'rgba(250, 173, 20, 0.85)' }}>50%</span>
-        <span className="legend-item" style={{ backgroundColor: 'rgba(255, 77, 79, 0.85)' }}>100%</span>
+        <span className="legend-label">差异字段数:</span>
+        <span className="legend-item" style={{ backgroundColor: 'rgba(82, 196, 26, 0.85)' }}>0</span>
+        <span className="legend-item" style={{ backgroundColor: 'rgba(250, 173, 20, 0.85)' }}>中等</span>
+        <span className="legend-item" style={{ backgroundColor: 'rgba(255, 77, 79, 0.85)' }}>最多</span>
       </div>
     </div>
   )
@@ -102,6 +104,7 @@ function DriftTable({ data, skip, limit, onPageChange, driftedOnly, onFilterChan
             <th>设备ID</th>
             <th>型号</th>
             <th>绑定模板</th>
+            <th>差异字段数</th>
             <th>期望哈希</th>
             <th>当前哈希</th>
             <th>状态</th>
@@ -113,6 +116,7 @@ function DriftTable({ data, skip, limit, onPageChange, driftedOnly, onFilterChan
               <td>{d.device_id}</td>
               <td>{d.model}</td>
               <td>{d.template_name || '-'}</td>
+              <td className={d.drift_field_count > 0 ? 'drift-red' : ''}>{d.drift_field_count}</td>
               <td className="hash-cell">{d.expected_hash ? d.expected_hash.slice(0, 12) + '...' : '-'}</td>
               <td className="hash-cell">{d.current_hash ? d.current_hash.slice(0, 12) + '...' : '-'}</td>
               <td>
@@ -262,7 +266,7 @@ export default function DashboardPage() {
 
       <section className="dashboard-section">
         <h3>内核配置差异热力图</h3>
-        <p className="section-desc">按设备型号和内核版本分组，颜色深浅表示配置漂移比例</p>
+        <p className="section-desc">按设备型号和内核版本分组，颜色深浅表示配置哈希与模板预期的差异字段数量</p>
         <ConfigHeatmap data={heatmap} />
       </section>
 

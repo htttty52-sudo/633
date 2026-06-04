@@ -23,6 +23,14 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     r = get_redis()
     ensure_consumer_group(r)
+    # Sync expected hashes to Redis for fast drift detection
+    from app.database import SessionLocal
+    from app.dashboard_crud import sync_expected_hashes_to_redis
+    db = SessionLocal()
+    try:
+        sync_expected_hashes_to_redis(db)
+    finally:
+        db.close()
     start_scheduler()
     yield
     stop_scheduler()
