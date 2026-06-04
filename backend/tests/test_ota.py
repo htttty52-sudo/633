@@ -176,34 +176,13 @@ class TestBatchedRollout:
             assert dt["status"] == "success"
 
     @patch("app.ota_crud.random.random", return_value=0.99)
-    def test_full_rollout_all_fail(self, mock_random, client):
+    def test_batch_failure_sets_batch_failed_status(self, mock_random, client):
+        """When any device fails, entire batch is rolled back and task enters batchN_failed"""
         task_id = self._setup_task(client, 10)
 
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices")
-        for dt in devices_resp.json()["device_tasks"]:
-            assert dt["status"] == "failed"
-            assert dt["error_message"] is not None
-
-    @patch("app.ota_crud.random.random")
-    def test_partial_failure_in_batch(self, mock_random, client):
-        """Batch2 has 4 devices: first 2 succeed, last 2 fail"""
-        task_id = self._setup_task(client, 10)
-
-        mock_random.return_value = 0.5
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        call_results = [0.5, 0.5, 0.99, 0.99]
-        mock_random.side_effect = call_results
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        detail_resp = client.get(f"/api/ota/tasks/{task_id}")
-        data = detail_resp.json()
-        assert data["batch2"]["success"] == 2
-        assert data["batch2"]["failed"] == 2
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "batch1_failed"
 
     @patch("app.ota_crud.random.random", return_value=0.5)
     def test_single_device_completes_after_batch1(self, mock_random, client):
@@ -213,10 +192,127 @@ class TestBatchedRollout:
         resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
         assert resp.json()["status"] == "completed"
 
+    @patch("app.ota_crud.random.random", return_value=0.5)
+    def test_batch_requires_manual_confirm_between_each(self, mock_random, client):
+        """Each batch transition waits for manual confirmation"""
+        task_id = self._setup_task(client, 10)
 
-class TestRollbackLogic:
+        resp = client.get(f"/api/ota/tasks/{task_id}")
+        assert resp.json()["status"] == "batch1_pending"
+
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        resp = client.get(f"/api/ota/tasks/{task_id}")
+        assert resp.json()["status"] == "batch2_pending"
+
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        resp = client.get(f"/api/ota/tasks/{task_id}")
+        assert resp.json()["status"] == "batch3_pending"
+
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        resp = client.get(f"/api/ota/tasks/{task_id}")
+        assert resp.json()["status"] == "completed"
+
+
+class TestFullBatchRollback:
+    """Key behavior: if ANY device in a batch fails, ALL devices in that batch are rolled back."""
+
+    @patch("app.ota_crud.random.random")
+    def test_single_failure_rolls_back_entire_batch(self, mock_random, client):
+        """4 devices in batch2: 3 succeed, 1 fails → all 4 rolled back"""
+        for i in range(10):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+        batch2_size = resp.json()["batch2_size"]
+
+        mock_random.return_value = 0.5
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        results = [0.5] * (batch2_size - 1) + [0.99]
+        mock_random.side_effect = results
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.json()["status"] == "batch2_failed"
+
+        detail = client.get(f"/api/ota/tasks/{task_id}").json()
+        assert detail["batch2"]["failed"] == batch2_size
+        assert detail["batch2"]["success"] == 0
+
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=2")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "failed"
+            device_resp = client.get(f"/api/devices/{dt['device_id']}")
+            assert device_resp.json()["kernel_version"] == "v1.0.0"
+
+    @patch("app.ota_crud.random.random")
+    def test_rollback_records_reason_for_all_devices(self, mock_random, client):
+        """All rolled-back devices get an error_message explaining why"""
+        for i in range(10):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+        batch2_size = resp.json()["batch2_size"]
+
+        mock_random.return_value = 0.5
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        results = [0.5] * (batch2_size - 1) + [0.99]
+        mock_random.side_effect = results
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=2")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["error_message"] is not None
+            assert len(dt["error_message"]) > 0
+
     @patch("app.ota_crud.random.random", return_value=0.99)
-    def test_failed_device_version_reverted(self, mock_random, client, db_session):
+    def test_all_fail_in_batch_all_rolled_back(self, mock_random, client):
+        """All devices fail → all rolled back, versions unchanged"""
+        for i in range(5):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=1")
+        for dt in devices_resp.json()["device_tasks"]:
+            device_resp = client.get(f"/api/devices/{dt['device_id']}")
+            assert device_resp.json()["kernel_version"] == "v1.0.0"
+
+
+class TestRetryBatch:
+    """Test failed→pending state transition (retry)."""
+
+    @patch("app.ota_crud.random.random")
+    def test_retry_resets_failed_devices_to_pending(self, mock_random, client):
+        """After failure, retry moves all devices back to pending"""
         client.post("/api/devices/", json={
             "device_id": "dev-001",
             "model": "RK3588",
@@ -230,53 +326,98 @@ class TestRollbackLogic:
         resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
         task_id = resp.json()["id"]
 
+        mock_random.return_value = 0.99
         client.post(f"/api/ota/tasks/{task_id}/confirm")
 
-        device_resp = client.get("/api/devices/dev-001")
-        assert device_resp.json()["kernel_version"] == "v1.0.0"
+        task_resp = client.get(f"/api/ota/tasks/{task_id}")
+        assert task_resp.json()["status"] == "batch1_failed"
 
-    @patch("app.ota_crud.random.random", return_value=0.1)
-    def test_successful_device_version_updated(self, mock_random, client):
-        client.post("/api/devices/", json={
-            "device_id": "dev-001",
-            "model": "RK3588",
-            "kernel_version": "v1.0.0",
-        })
-        resp = client.post("/api/ota/firmwares/", json={
-            "version": "v2.0.0", "target_model": "RK3588",
-            "filename": "fw.bin", "file_size": 10000,
-        })
-        fw_id = resp.json()["id"]
-        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
-        task_id = resp.json()["id"]
-
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        device_resp = client.get("/api/devices/dev-001")
-        assert device_resp.json()["kernel_version"] == "v2.0.0"
-
-    @patch("app.ota_crud.random.random", return_value=0.99)
-    def test_rollback_records_error_message(self, mock_random, client):
-        client.post("/api/devices/", json={
-            "device_id": "dev-001",
-            "model": "RK3588",
-            "kernel_version": "v1.0.0",
-        })
-        resp = client.post("/api/ota/firmwares/", json={
-            "version": "v2.0.0", "target_model": "RK3588",
-            "filename": "fw.bin", "file_size": 10000,
-        })
-        fw_id = resp.json()["id"]
-        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
-        task_id = resp.json()["id"]
-
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        resp = client.post(f"/api/ota/tasks/{task_id}/retry")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "batch1_pending"
 
         devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices")
-        dt = devices_resp.json()["device_tasks"][0]
-        assert dt["status"] == "failed"
-        assert dt["error_message"] is not None
-        assert len(dt["error_message"]) > 0
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "pending"
+            assert dt["error_message"] is None
+
+    @patch("app.ota_crud.random.random")
+    def test_retry_then_confirm_succeeds(self, mock_random, client):
+        """Full flow: fail → retry → confirm (succeed) → next batch"""
+        for i in range(10):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        mock_random.return_value = 0.99
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+
+        mock_random.return_value = 0.5
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.json()["status"] == "batch2_pending"
+
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=1")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "success"
+
+    def test_retry_on_non_failed_state_returns_400(self, client):
+        """Cannot retry when task is not in batchN_failed state"""
+        client.post("/api/devices/", json={
+            "device_id": "dev-001",
+            "model": "RK3588",
+            "kernel_version": "v1.0.0",
+        })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        resp = client.post(f"/api/ota/tasks/{task_id}/retry")
+        assert resp.status_code == 400
+
+    @patch("app.ota_crud.random.random")
+    def test_multiple_retries_allowed(self, mock_random, client):
+        """Can retry multiple times until success"""
+        client.post("/api/devices/", json={
+            "device_id": "dev-001",
+            "model": "RK3588",
+            "kernel_version": "v1.0.0",
+        })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        mock_random.return_value = 0.99
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+
+        mock_random.return_value = 0.99
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+        mock_random.return_value = 0.5
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.json()["status"] == "completed"
 
 
 class TestHeartbeatDuringUpgrade:
@@ -363,6 +504,12 @@ class TestHeartbeatDuringUpgrade:
         ).scalar_one()
         assert device.last_heartbeat == old_heartbeat
 
+    def test_heartbeat_independent_of_upgrade_execution(self, client, db_session):
+        """Heartbeat runs in its own executor, decoupled from OTA logic"""
+        from app.scheduler import scheduler
+        executors = scheduler._executors
+        assert "heartbeat" in executors
+
 
 class TestAbortTask:
     def test_abort_stops_further_batches(self, client):
@@ -407,11 +554,32 @@ class TestAbortTask:
         resp = client.post(f"/api/ota/tasks/{task_id}/abort")
         assert resp.status_code == 400
 
+    @patch("app.ota_crud.random.random", return_value=0.99)
+    def test_abort_from_failed_state(self, mock_random, client):
+        """Can abort task that is in batchN_failed state"""
+        client.post("/api/devices/", json={
+            "device_id": "dev-001",
+            "model": "RK3588",
+            "kernel_version": "v1.0.0",
+        })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        resp = client.post(f"/api/ota/tasks/{task_id}/abort")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "aborted"
+
 
 class TestTaskConfirmValidation:
     @patch("app.ota_crud.random.random", return_value=0.5)
     def test_double_confirm_returns_400(self, mock_random, client):
-        """Cannot confirm a batch that's already running or completed"""
+        """Cannot confirm a batch that has already been processed"""
         client.post("/api/devices/", json={
             "device_id": "dev-001",
             "model": "RK3588",
@@ -436,9 +604,11 @@ class TestTaskConfirmValidation:
 
 
 class TestNetworkConditionSimulation:
+    """Simulate packet loss, latency, and partial failures under different network conditions."""
+
     @patch("app.ota_crud.random.random")
-    def test_mixed_success_rates_across_batches(self, mock_random, client):
-        """Simulate: batch1 all succeed, batch2 mixed, batch3 all fail"""
+    def test_packet_loss_causes_batch_failure_and_full_rollback(self, mock_random, client):
+        """Simulated 30% packet loss: some devices timeout → entire batch rolled back"""
         for i in range(10):
             client.post("/api/devices/", json={
                 "device_id": f"dev-{i:03d}",
@@ -450,39 +620,28 @@ class TestNetworkConditionSimulation:
             "filename": "fw.bin", "file_size": 10000,
         })
         fw_id = resp.json()["id"]
-
-        mock_random.return_value = 0.5
         resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
         task_id = resp.json()["id"]
         batch1_size = resp.json()["batch1_size"]
+
+        mock_random.return_value = 0.5
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
         batch2_size = resp.json()["batch2_size"]
-        batch3_size = resp.json()["batch3_size"]
+        packet_loss = [0.5, 0.5, 0.99, 0.5]
+        mock_random.side_effect = packet_loss[:batch2_size]
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.json()["status"] == "batch2_failed"
 
-        mock_random.side_effect = [0.1] * batch1_size
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        mixed = [0.1, 0.99] * (batch2_size // 2 + 1)
-        mock_random.side_effect = mixed[:batch2_size]
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        mock_random.side_effect = [0.99] * batch3_size
-        client.post(f"/api/ota/tasks/{task_id}/confirm")
-
-        detail_resp = client.get(f"/api/ota/tasks/{task_id}")
-        data = detail_resp.json()
-
-        assert data["batch1"]["success"] == batch1_size
-        assert data["batch1"]["failed"] == 0
-
-        assert data["batch2"]["success"] >= 1
-        assert data["batch2"]["failed"] >= 1
-
-        assert data["batch3"]["failed"] == batch3_size
-        assert data["batch3"]["success"] == 0
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=2")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "failed"
+            device_resp = client.get(f"/api/devices/{dt['device_id']}")
+            assert device_resp.json()["kernel_version"] == "v1.0.0"
 
     @patch("app.ota_crud.random.random")
-    def test_version_consistency_after_mixed_results(self, mock_random, client):
-        """After mixed upgrades, verify device versions are correct"""
+    def test_high_latency_batch_retry_then_success(self, mock_random, client):
+        """Simulate: high latency causes timeout on first attempt, retry succeeds"""
         for i in range(5):
             client.post("/api/devices/", json={
                 "device_id": f"dev-{i:03d}",
@@ -494,38 +653,144 @@ class TestNetworkConditionSimulation:
             "filename": "fw.bin", "file_size": 10000,
         })
         fw_id = resp.json()["id"]
-
-        mock_random.return_value = 0.5
         resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
         task_id = resp.json()["id"]
 
-        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices")
-        all_device_tasks = devices_resp.json()["device_tasks"]
-        total = len(all_device_tasks)
-
-        outcomes = [0.1 if i % 2 == 0 else 0.99 for i in range(total)]
-        mock_random.side_effect = outcomes[:1]
+        mock_random.return_value = 0.99
         client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
 
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_pending"
+
+        mock_random.return_value = 0.5
+        resp = client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert resp.json()["status"] in ("batch2_pending", "completed")
+
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=1")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "success"
+            device_resp = client.get(f"/api/devices/{dt['device_id']}")
+            assert device_resp.json()["kernel_version"] == "v2.0.0"
+
+    @patch("app.ota_crud.random.random")
+    def test_intermittent_failure_across_multiple_batches(self, mock_random, client):
+        """Batch1 succeeds, batch2 fails (packet loss), retry batch2, batch3 succeeds"""
+        for i in range(10):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
         batch2_size = resp.json()["batch2_size"]
         batch3_size = resp.json()["batch3_size"]
 
-        if batch2_size > 0:
-            mock_random.side_effect = outcomes[1:1 + batch2_size]
-            client.post(f"/api/ota/tasks/{task_id}/confirm")
+        mock_random.return_value = 0.5
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
 
-        if batch3_size > 0:
-            mock_random.side_effect = outcomes[1 + batch2_size:]
-            client.post(f"/api/ota/tasks/{task_id}/confirm")
+        mock_random.side_effect = [0.99] * batch2_size
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch2_failed"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+
+        mock_random.side_effect = [0.5] * batch2_size
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch3_pending"
+
+        mock_random.side_effect = [0.5] * batch3_size
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "completed"
 
         devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices")
         for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "success"
             device_resp = client.get(f"/api/devices/{dt['device_id']}")
-            device_version = device_resp.json()["kernel_version"]
-            if dt["status"] == "success":
-                assert device_version == "v2.0.0"
-            elif dt["status"] == "failed":
-                assert device_version == "v1.0.0"
+            assert device_resp.json()["kernel_version"] == "v2.0.0"
+
+    @patch("app.ota_crud.random.random")
+    def test_complete_network_failure_all_batches_rollback(self, mock_random, client):
+        """100% packet loss on all attempts, retry exhaustion pattern"""
+        for i in range(5):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+
+        mock_random.return_value = 0.99
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+        assert client.get(f"/api/ota/tasks/{task_id}").json()["status"] == "batch1_failed"
+
+        resp = client.post(f"/api/ota/tasks/{task_id}/abort")
+        assert resp.json()["status"] == "aborted"
+
+        for i in range(5):
+            device_resp = client.get(f"/api/devices/dev-{i:03d}")
+            assert device_resp.json()["kernel_version"] == "v1.0.0"
+
+    @patch("app.ota_crud.random.random")
+    def test_queue_retry_preserves_device_state(self, mock_random, client):
+        """After retry, device versions remain at previous_version (no partial state)"""
+        for i in range(10):
+            client.post("/api/devices/", json={
+                "device_id": f"dev-{i:03d}",
+                "model": "RK3588",
+                "kernel_version": "v1.0.0",
+            })
+        resp = client.post("/api/ota/firmwares/", json={
+            "version": "v2.0.0", "target_model": "RK3588",
+            "filename": "fw.bin", "file_size": 10000,
+        })
+        fw_id = resp.json()["id"]
+        resp = client.post("/api/ota/tasks/", json={"firmware_id": fw_id})
+        task_id = resp.json()["id"]
+        batch2_size = resp.json()["batch2_size"]
+
+        mock_random.return_value = 0.5
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        mock_random.side_effect = [0.5] * (batch2_size - 1) + [0.99]
+        client.post(f"/api/ota/tasks/{task_id}/confirm")
+
+        for i in range(10):
+            device_resp = client.get(f"/api/devices/dev-{i:03d}")
+            version = device_resp.json()["kernel_version"]
+            devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices")
+            dt_map = {d["device_id"]: d for d in devices_resp.json()["device_tasks"]}
+            dt = dt_map.get(f"dev-{i:03d}")
+            if dt and dt["batch_number"] == 1:
+                assert version == "v2.0.0"
+            else:
+                assert version == "v1.0.0"
+
+        client.post(f"/api/ota/tasks/{task_id}/retry")
+        devices_resp = client.get(f"/api/ota/tasks/{task_id}/devices?batch_number=2")
+        for dt in devices_resp.json()["device_tasks"]:
+            assert dt["status"] == "pending"
+            assert dt["error_message"] is None
 
 
 class TestOtaTaskDetail:

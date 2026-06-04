@@ -1,8 +1,10 @@
 import random
 import logging
+import threading
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
 from sqlalchemy import select
 
 from app.database import SessionLocal
@@ -11,46 +13,58 @@ from app.config import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(
+    executors={
+        "heartbeat": ThreadPoolExecutor(max_workers=2),
+        "default": ThreadPoolExecutor(max_workers=2),
+    }
+)
+
+_heartbeat_lock = threading.Lock()
 
 
 def simulate_heartbeat():
-    """Simulate device heartbeats: only update last_heartbeat for devices still within the timeout window.
-    Devices that have already timed out won't randomly come back online.
-    Devices currently being upgraded always get heartbeat updated."""
-    db = SessionLocal()
+    """Independently manages device heartbeat. Runs in its own thread pool executor,
+    completely decoupled from OTA upgrade operations.
+    Devices in 'upgrading' state always get heartbeat updated (100% probability)."""
+    if not _heartbeat_lock.acquire(blocking=False):
+        return
     try:
-        from app.ota_crud import get_upgrading_device_ids
-        upgrading_ids = get_upgrading_device_ids(db)
+        db = SessionLocal()
+        try:
+            from app.ota_crud import get_upgrading_device_ids
+            upgrading_ids = get_upgrading_device_ids(db)
 
-        devices = db.execute(select(Device)).scalars().all()
-        if not devices:
-            return
+            devices = db.execute(select(Device)).scalars().all()
+            if not devices:
+                return
 
-        now = datetime.utcnow()
-        for device in devices:
-            if device.device_id in upgrading_ids:
-                device.last_heartbeat = now
-                continue
-
-            elapsed = (now - device.last_heartbeat).total_seconds()
-            if elapsed < HEARTBEAT_TIMEOUT:
-                # Device is within the threshold - randomly decide if it sends a heartbeat
-                if random.random() < 0.7:
+            now = datetime.utcnow()
+            for device in devices:
+                if device.device_id in upgrading_ids:
                     device.last_heartbeat = now
+                    continue
 
-        db.commit()
-        logger.info(f"Heartbeat simulation completed for {len(devices)} devices")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Heartbeat simulation error: {e}")
+                elapsed = (now - device.last_heartbeat).total_seconds()
+                if elapsed < HEARTBEAT_TIMEOUT:
+                    if random.random() < 0.7:
+                        device.last_heartbeat = now
+
+            db.commit()
+            logger.info(f"Heartbeat simulation completed for {len(devices)} devices")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Heartbeat simulation error: {e}")
+        finally:
+            db.close()
     finally:
-        db.close()
+        _heartbeat_lock.release()
 
 
 def check_offline_devices():
     """Compare current time with each device's last_heartbeat.
-    If the difference exceeds HEARTBEAT_TIMEOUT, mark as offline; otherwise mark as online."""
+    If the difference exceeds HEARTBEAT_TIMEOUT, mark as offline; otherwise mark as online.
+    Runs independently in default thread pool."""
     db = SessionLocal()
     try:
         devices = db.execute(select(Device)).scalars().all()
@@ -79,8 +93,18 @@ def check_offline_devices():
 
 
 def start_scheduler():
-    scheduler.add_job(simulate_heartbeat, "interval", seconds=HEARTBEAT_INTERVAL, id="heartbeat_simulation")
-    scheduler.add_job(check_offline_devices, "interval", seconds=HEARTBEAT_INTERVAL, id="offline_check")
+    scheduler.add_job(
+        simulate_heartbeat, "interval",
+        seconds=HEARTBEAT_INTERVAL,
+        id="heartbeat_simulation",
+        executor="heartbeat",
+    )
+    scheduler.add_job(
+        check_offline_devices, "interval",
+        seconds=HEARTBEAT_INTERVAL,
+        id="offline_check",
+        executor="default",
+    )
     scheduler.start()
     logger.info(f"Scheduler started: heartbeat every {HEARTBEAT_INTERVAL}s, timeout {HEARTBEAT_TIMEOUT}s")
 

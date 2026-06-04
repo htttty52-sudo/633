@@ -189,8 +189,12 @@ def confirm_batch(db: Session, task_id: int) -> OtaTask:
     stmt = select(OtaDeviceTask).where(
         OtaDeviceTask.ota_task_id == task_id,
         OtaDeviceTask.batch_number == current,
+        OtaDeviceTask.status == "pending",
     )
     device_tasks = list(db.execute(stmt).scalars().all())
+
+    batch_has_failure = False
+    failure_reason = None
 
     for dt in device_tasks:
         device_stmt = select(Device).where(Device.device_id == dt.device_id)
@@ -206,15 +210,46 @@ def confirm_batch(db: Session, task_id: int) -> OtaTask:
                 device.kernel_version = dt.target_version
         else:
             dt.status = "failed"
-            dt.error_message = random.choice(OTA_FAILURE_MESSAGES)
+            failure_reason = random.choice(OTA_FAILURE_MESSAGES)
+            dt.error_message = failure_reason
             dt.completed_at = datetime.utcnow()
-            if device:
-                device.kernel_version = dt.previous_version
+            batch_has_failure = True
 
-    _advance_task_state(task)
+    if batch_has_failure:
+        _rollback_entire_batch(db, task_id, current, failure_reason)
+        task.status = f"batch{current}_failed"
+    else:
+        _advance_task_state(task)
+
     db.commit()
     db.refresh(task)
     return task
+
+
+def _rollback_entire_batch(db: Session, task_id: int, batch_number: int, reason: str):
+    """When any device in a batch fails, roll back ALL devices in that batch."""
+    stmt = select(OtaDeviceTask).where(
+        OtaDeviceTask.ota_task_id == task_id,
+        OtaDeviceTask.batch_number == batch_number,
+    )
+    device_tasks = list(db.execute(stmt).scalars().all())
+
+    for dt in device_tasks:
+        device_stmt = select(Device).where(Device.device_id == dt.device_id)
+        device = db.execute(device_stmt).scalar_one_or_none()
+
+        if device:
+            device.kernel_version = dt.previous_version
+
+        if dt.status == "success":
+            dt.status = "failed"
+            dt.error_message = f"Rolled back: batch failure caused by other device ({reason})"
+            dt.completed_at = datetime.utcnow()
+        elif dt.status != "failed":
+            dt.status = "failed"
+            if not dt.error_message:
+                dt.error_message = reason
+            dt.completed_at = datetime.utcnow()
 
 
 def _advance_task_state(task: OtaTask):
@@ -229,6 +264,35 @@ def _advance_task_state(task: OtaTask):
             task.status = "completed"
     else:
         task.status = "completed"
+
+
+def retry_batch(db: Session, task_id: int) -> OtaTask:
+    """Retry a failed batch: reset all failed device tasks to pending (failed→pending)."""
+    task = get_ota_task(db, task_id)
+    if not task:
+        raise OtaTaskNotFoundError(task_id)
+
+    current = task.current_batch
+    expected_status = f"batch{current}_failed"
+    if task.status != expected_status:
+        raise InvalidTaskStateError(task_id, task.status, expected_status)
+
+    stmt = select(OtaDeviceTask).where(
+        OtaDeviceTask.ota_task_id == task_id,
+        OtaDeviceTask.batch_number == current,
+    )
+    device_tasks = list(db.execute(stmt).scalars().all())
+
+    for dt in device_tasks:
+        dt.status = "pending"
+        dt.error_message = None
+        dt.started_at = None
+        dt.completed_at = None
+
+    task.status = f"batch{current}_pending"
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 def abort_ota_task(db: Session, task_id: int) -> OtaTask:

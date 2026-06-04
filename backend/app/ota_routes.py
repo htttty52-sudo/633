@@ -12,7 +12,7 @@ from app.ota_schemas import (
 from app.ota_crud import (
     create_firmware, get_firmwares, get_firmware, delete_firmware,
     create_ota_task, get_ota_tasks, get_ota_task, confirm_batch,
-    abort_ota_task, get_ota_device_tasks, get_task_batch_stats,
+    abort_ota_task, retry_batch, get_ota_device_tasks, get_task_batch_stats,
     FirmwareNotFoundError, OtaTaskNotFoundError,
     NoMatchingDevicesError, InvalidTaskStateError,
 )
@@ -106,6 +106,17 @@ def api_confirm_batch(task_id: int, db: Session = Depends(get_db)):
 def api_abort_ota_task(task_id: int, db: Session = Depends(get_db)):
     try:
         task = abort_ota_task(db, task_id)
+    except OtaTaskNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidTaskStateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return task
+
+
+@router.post("/tasks/{task_id}/retry", response_model=OtaTaskResponse)
+def api_retry_batch(task_id: int, db: Session = Depends(get_db)):
+    try:
+        task = retry_batch(db, task_id)
     except OtaTaskNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except InvalidTaskStateError as e:

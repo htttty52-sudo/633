@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   fetchFirmwares, createFirmware, deleteFirmware,
   fetchOtaTasks, createOtaTask, getOtaTask,
-  confirmBatch, abortOtaTask, fetchOtaDeviceTasks,
+  confirmBatch, abortOtaTask, retryBatch, fetchOtaDeviceTasks,
 } from './otaApi'
 
 const POLL_INTERVAL = 3000
@@ -207,10 +207,13 @@ function TaskSection({ tasks, firmwares, onRefresh, showModal, setShowModal, onS
     const map = {
       'batch1_pending': '等待确认 (10%)',
       'batch1_running': '执行中 (10%)',
+      'batch1_failed': '失败-待重试 (10%)',
       'batch2_pending': '等待确认 (50%)',
       'batch2_running': '执行中 (50%)',
+      'batch2_failed': '失败-待重试 (50%)',
       'batch3_pending': '等待确认 (100%)',
       'batch3_running': '执行中 (100%)',
+      'batch3_failed': '失败-待重试 (100%)',
       'completed': '已完成',
       'aborted': '已中止',
     }
@@ -219,7 +222,7 @@ function TaskSection({ tasks, firmwares, onRefresh, showModal, setShowModal, onS
 
   const statusClass = (status) => {
     if (status === 'completed') return 'status-success'
-    if (status === 'aborted') return 'status-failed'
+    if (status === 'aborted' || status.includes('failed')) return 'status-failed'
     if (status.includes('running')) return 'status-upgrading'
     return 'status-pending'
   }
@@ -354,6 +357,19 @@ function TaskDetail({ taskId, onBack }) {
     }
   }
 
+  const handleRetry = async () => {
+    if (!window.confirm(`确认重试第 ${task.current_batch} 批升级？`)) return
+    setLoading(true)
+    try {
+      await retryBatch(taskId)
+      await loadDetail()
+    } catch (err) {
+      alert(err.response?.data?.detail || '操作失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleAbort = async () => {
     if (!window.confirm('确认中止升级任务？')) return
     setLoading(true)
@@ -370,6 +386,7 @@ function TaskDetail({ taskId, onBack }) {
   if (!task) return <div className="loading">加载中...</div>
 
   const canConfirm = task.status.endsWith('_pending')
+  const canRetry = task.status.endsWith('_failed')
   const canAbort = !['completed', 'aborted'].includes(task.status)
 
   return (
@@ -378,7 +395,7 @@ function TaskDetail({ taskId, onBack }) {
 
       <div className="task-header">
         <h3>升级任务 #{task.id}</h3>
-        <span className={`status-badge ${task.status === 'completed' ? 'status-success' : task.status === 'aborted' ? 'status-failed' : 'status-upgrading'}`}>
+        <span className={`status-badge ${task.status === 'completed' ? 'status-success' : task.status === 'aborted' || task.status.includes('failed') ? 'status-failed' : 'status-upgrading'}`}>
           {task.status}
         </span>
       </div>
@@ -399,6 +416,11 @@ function TaskDetail({ taskId, onBack }) {
         {canConfirm && (
           <button className="btn-primary" onClick={handleConfirm} disabled={loading}>
             {loading ? '执行中...' : `确认执行第 ${task.current_batch} 批`}
+          </button>
+        )}
+        {canRetry && (
+          <button className="btn-retry" onClick={handleRetry} disabled={loading}>
+            {loading ? '重试中...' : `重试第 ${task.current_batch} 批`}
           </button>
         )}
         {canAbort && (

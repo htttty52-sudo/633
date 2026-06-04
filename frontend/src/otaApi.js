@@ -37,6 +37,10 @@ export function abortOtaTask(taskId) {
   return api.post(`/tasks/${taskId}/abort`)
 }
 
+export function retryBatch(taskId) {
+  return api.post(`/tasks/${taskId}/retry`)
+}
+
 export function fetchOtaDeviceTasks(taskId, params = {}) {
   return api.get(`/tasks/${taskId}/devices`, { params })
 }
