@@ -14,7 +14,7 @@ from app.ota_crud import (
     create_ota_task, get_ota_tasks, get_ota_task, confirm_batch,
     abort_ota_task, retry_batch, get_ota_device_tasks, get_task_batch_stats,
     FirmwareNotFoundError, OtaTaskNotFoundError,
-    NoMatchingDevicesError, InvalidTaskStateError,
+    NoMatchingDevicesError, InvalidTaskStateError, RetryTooEarlyError,
 )
 
 router = APIRouter(prefix="/api/ota", tags=["OTA"])
@@ -83,6 +83,8 @@ def api_get_ota_task(task_id: int, db: Session = Depends(get_db)):
         batch2_size=task.batch2_size,
         batch3_size=task.batch3_size,
         current_batch=task.current_batch,
+        retry_count=task.retry_count,
+        next_retry_at=task.next_retry_at,
         created_at=task.created_at,
         updated_at=task.updated_at,
         batch1=BatchStats(**batch_stats["batch1"]),
@@ -114,13 +116,19 @@ def api_abort_ota_task(task_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/retry", response_model=OtaTaskResponse)
-def api_retry_batch(task_id: int, db: Session = Depends(get_db)):
+def api_retry_batch(
+    task_id: int,
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     try:
-        task = retry_batch(db, task_id)
+        task = retry_batch(db, task_id, force=force)
     except OtaTaskNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except InvalidTaskStateError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except RetryTooEarlyError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     return task
 
 

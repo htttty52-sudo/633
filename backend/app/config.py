@@ -7,3 +7,5 @@ DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:password@localhos
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 HEARTBEAT_TIMEOUT = int(os.getenv("HEARTBEAT_TIMEOUT", "45"))
 OTA_UPGRADE_SUCCESS_RATE = float(os.getenv("OTA_UPGRADE_SUCCESS_RATE", "0.8"))
+OTA_BATCH_TIMEOUT = float(os.getenv("OTA_BATCH_TIMEOUT", "30.0"))
+OTA_RETRY_BASE_DELAY = int(os.getenv("OTA_RETRY_BASE_DELAY", "10"))

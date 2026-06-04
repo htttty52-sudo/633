@@ -32,8 +32,8 @@ def simulate_heartbeat():
     try:
         db = SessionLocal()
         try:
-            from app.ota_crud import get_upgrading_device_ids
-            upgrading_ids = get_upgrading_device_ids(db)
+            from app.ota_crud import get_upgrading_device_ids_cached
+            upgrading_ids = get_upgrading_device_ids_cached()
 
             devices = db.execute(select(Device)).scalars().all()
             if not devices:

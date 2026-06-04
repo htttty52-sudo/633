@@ -52,6 +52,8 @@ class OtaTaskResponse(BaseModel):
     batch2_size: int
     batch3_size: int
     current_batch: int
+    retry_count: int
+    next_retry_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 
@@ -68,6 +70,8 @@ class OtaTaskDetailResponse(BaseModel):
     batch2_size: int
     batch3_size: int
     current_batch: int
+    retry_count: int
+    next_retry_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
     batch1: BatchStats
@@ -90,6 +94,7 @@ class OtaDeviceTaskResponse(BaseModel):
     status: str
     previous_version: str
     target_version: str
+    attempt_count: int
     error_message: Optional[str]
     started_at: Optional[datetime]
     completed_at: Optional[datetime]

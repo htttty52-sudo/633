@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, UniqueConstraint, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -31,6 +31,8 @@ class OtaTask(Base):
     batch2_size: Mapped[int] = mapped_column(Integer, nullable=False)
     batch3_size: Mapped[int] = mapped_column(Integer, nullable=False)
     current_batch: Mapped[int] = mapped_column(Integer, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -48,6 +50,7 @@ class OtaDeviceTask(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     previous_version: Mapped[str] = mapped_column(String(64), nullable=False)
     target_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str] = mapped_column(String(512), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)

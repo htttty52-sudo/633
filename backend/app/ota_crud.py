@@ -1,7 +1,9 @@
 import math
 import random
 import hashlib
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func
@@ -10,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import Device
 from app.ota_models import Firmware, OtaTask, OtaDeviceTask
 from app.ota_schemas import FirmwareCreate, OtaTaskCreate
-from app.config import OTA_UPGRADE_SUCCESS_RATE
+from app.config import OTA_UPGRADE_SUCCESS_RATE, OTA_BATCH_TIMEOUT, OTA_RETRY_BASE_DELAY
 
 
 class FirmwareNotFoundError(Exception):
@@ -38,6 +40,13 @@ class InvalidTaskStateError(Exception):
         super().__init__(f"Task {task_id} is in '{current_status}' state, expected '{expected}'")
 
 
+class RetryTooEarlyError(Exception):
+    def __init__(self, task_id: int, wait_seconds: int):
+        self.task_id = task_id
+        self.wait_seconds = wait_seconds
+        super().__init__(f"Task {task_id}: retry not allowed yet, wait {wait_seconds}s (exponential backoff)")
+
+
 OTA_FAILURE_MESSAGES = [
     "Firmware download timeout: device unreachable",
     "Flash write error: insufficient storage space",
@@ -49,6 +58,33 @@ OTA_FAILURE_MESSAGES = [
     "Watchdog timer expired during upgrade process",
 ]
 
+# --- Heartbeat state cache ---
+_upgrading_cache_lock = threading.Lock()
+_upgrading_device_ids_cache: set[str] = set()
+
+
+def _refresh_upgrading_cache(db: Session):
+    """Refresh the upgrading device IDs cache from the state machine."""
+    global _upgrading_device_ids_cache
+    stmt = select(OtaDeviceTask.device_id).where(OtaDeviceTask.status == "upgrading")
+    new_ids = set(db.execute(stmt).scalars().all())
+    with _upgrading_cache_lock:
+        _upgrading_device_ids_cache = new_ids
+
+
+def get_upgrading_device_ids_cached() -> set[str]:
+    """Read from cache without DB query — called by heartbeat scheduler."""
+    with _upgrading_cache_lock:
+        return _upgrading_device_ids_cache.copy()
+
+
+def get_upgrading_device_ids(db: Session) -> set[str]:
+    """Fallback: query DB directly (used if cache not yet warmed)."""
+    stmt = select(OtaDeviceTask.device_id).where(OtaDeviceTask.status == "upgrading")
+    return set(db.execute(stmt).scalars().all())
+
+
+# --- Firmware CRUD ---
 
 def create_firmware(db: Session, data: FirmwareCreate) -> Firmware:
     checksum = hashlib.sha256(
@@ -98,12 +134,16 @@ def delete_firmware(db: Session, firmware_id: int) -> bool:
     return True
 
 
+# --- Batch calculation ---
+
 def _calculate_batch_sizes(total: int) -> tuple[int, int, int]:
     batch1 = max(1, math.ceil(total * 0.10))
     batch2 = max(0, math.ceil(total * 0.50) - batch1)
     batch3 = total - batch1 - batch2
     return batch1, batch2, batch3
 
+
+# --- OTA Task CRUD ---
 
 def create_ota_task(db: Session, data: OtaTaskCreate) -> OtaTask:
     firmware = get_firmware(db, data.firmware_id)
@@ -128,6 +168,7 @@ def create_ota_task(db: Session, data: OtaTaskCreate) -> OtaTask:
         batch2_size=batch2_size,
         batch3_size=batch3_size,
         current_batch=1,
+        retry_count=0,
     )
     db.add(task)
     db.flush()
@@ -145,6 +186,7 @@ def create_ota_task(db: Session, data: OtaTaskCreate) -> OtaTask:
                 status="pending",
                 previous_version=device.kernel_version,
                 target_version=firmware.version,
+                attempt_count=0,
             )
             db.add(device_task)
             idx += 1
@@ -174,7 +216,9 @@ def get_ota_tasks(db: Session, status: Optional[str] = None,
     return tasks, total
 
 
-def confirm_batch(db: Session, task_id: int) -> OtaTask:
+# --- Batch confirm with timeout ---
+
+def confirm_batch(db: Session, task_id: int, timeout: Optional[float] = None) -> OtaTask:
     task = get_ota_task(db, task_id)
     if not task:
         raise OtaTaskNotFoundError(task_id)
@@ -184,6 +228,7 @@ def confirm_batch(db: Session, task_id: int) -> OtaTask:
     if task.status != expected_status:
         raise InvalidTaskStateError(task_id, task.status, expected_status)
 
+    batch_timeout = timeout if timeout is not None else OTA_BATCH_TIMEOUT
     task.status = f"batch{current}_running"
 
     stmt = select(OtaDeviceTask).where(
@@ -193,15 +238,31 @@ def confirm_batch(db: Session, task_id: int) -> OtaTask:
     )
     device_tasks = list(db.execute(stmt).scalars().all())
 
+    _refresh_upgrading_cache(db)
+
     batch_has_failure = False
+    batch_timed_out = False
     failure_reason = None
+    batch_start = time.monotonic()
 
     for dt in device_tasks:
+        elapsed = time.monotonic() - batch_start
+        if elapsed >= batch_timeout:
+            batch_timed_out = True
+            failure_reason = f"Batch timeout: exceeded {batch_timeout}s limit"
+            dt.status = "failed"
+            dt.error_message = failure_reason
+            dt.completed_at = datetime.utcnow()
+            dt.attempt_count += 1
+            batch_has_failure = True
+            continue
+
         device_stmt = select(Device).where(Device.device_id == dt.device_id)
         device = db.execute(device_stmt).scalar_one_or_none()
 
         dt.status = "upgrading"
         dt.started_at = datetime.utcnow()
+        dt.attempt_count += 1
 
         if random.random() < OTA_UPGRADE_SUCCESS_RATE:
             dt.status = "success"
@@ -221,13 +282,15 @@ def confirm_batch(db: Session, task_id: int) -> OtaTask:
     else:
         _advance_task_state(task)
 
+    _refresh_upgrading_cache(db)
     db.commit()
     db.refresh(task)
     return task
 
 
 def _rollback_entire_batch(db: Session, task_id: int, batch_number: int, reason: str):
-    """When any device in a batch fails, roll back ALL devices in that batch."""
+    """When any device in a batch fails, roll back ALL devices in that batch.
+    Fully resets upgrade markers and attempt state to pre-upgrade condition."""
     stmt = select(OtaDeviceTask).where(
         OtaDeviceTask.ota_task_id == task_id,
         OtaDeviceTask.batch_number == batch_number,
@@ -243,13 +306,15 @@ def _rollback_entire_batch(db: Session, task_id: int, batch_number: int, reason:
 
         if dt.status == "success":
             dt.status = "failed"
-            dt.error_message = f"Rolled back: batch failure caused by other device ({reason})"
-            dt.completed_at = datetime.utcnow()
-        elif dt.status != "failed":
+            dt.error_message = f"Rolled back: batch failure ({reason})"
+        elif dt.status == "upgrading" or dt.status != "failed":
             dt.status = "failed"
             if not dt.error_message:
                 dt.error_message = reason
-            dt.completed_at = datetime.utcnow()
+
+        dt.attempt_count = 0
+        dt.started_at = None
+        dt.completed_at = datetime.utcnow()
 
 
 def _advance_task_state(task: OtaTask):
@@ -266,8 +331,11 @@ def _advance_task_state(task: OtaTask):
         task.status = "completed"
 
 
-def retry_batch(db: Session, task_id: int) -> OtaTask:
-    """Retry a failed batch: reset all failed device tasks to pending (failed→pending)."""
+# --- Retry with exponential backoff ---
+
+def retry_batch(db: Session, task_id: int, force: bool = False) -> OtaTask:
+    """Retry a failed batch: failed→pending with exponential backoff guard.
+    Set force=True to bypass backoff (manual override)."""
     task = get_ota_task(db, task_id)
     if not task:
         raise OtaTaskNotFoundError(task_id)
@@ -276,6 +344,12 @@ def retry_batch(db: Session, task_id: int) -> OtaTask:
     expected_status = f"batch{current}_failed"
     if task.status != expected_status:
         raise InvalidTaskStateError(task_id, task.status, expected_status)
+
+    if not force and task.next_retry_at:
+        now = datetime.utcnow()
+        if now < task.next_retry_at:
+            wait = int((task.next_retry_at - now).total_seconds()) + 1
+            raise RetryTooEarlyError(task_id, wait)
 
     stmt = select(OtaDeviceTask).where(
         OtaDeviceTask.ota_task_id == task_id,
@@ -289,11 +363,18 @@ def retry_batch(db: Session, task_id: int) -> OtaTask:
         dt.started_at = None
         dt.completed_at = None
 
+    task.retry_count += 1
+    backoff_seconds = OTA_RETRY_BASE_DELAY * (2 ** task.retry_count)
+    task.next_retry_at = datetime.utcnow() + timedelta(seconds=backoff_seconds)
     task.status = f"batch{current}_pending"
+
+    _refresh_upgrading_cache(db)
     db.commit()
     db.refresh(task)
     return task
 
+
+# --- Abort ---
 
 def abort_ota_task(db: Session, task_id: int) -> OtaTask:
     task = get_ota_task(db, task_id)
@@ -304,10 +385,13 @@ def abort_ota_task(db: Session, task_id: int) -> OtaTask:
         raise InvalidTaskStateError(task_id, task.status, "an active state")
 
     task.status = "aborted"
+    _refresh_upgrading_cache(db)
     db.commit()
     db.refresh(task)
     return task
 
+
+# --- Query helpers ---
 
 def get_ota_device_tasks(db: Session, task_id: int,
                          batch_number: Optional[int] = None,
@@ -345,8 +429,3 @@ def get_task_batch_stats(db: Session, task_id: int) -> dict:
             "failed": sum(1 for t in tasks if t.status == "failed"),
         }
     return result
-
-
-def get_upgrading_device_ids(db: Session) -> set[str]:
-    stmt = select(OtaDeviceTask.device_id).where(OtaDeviceTask.status == "upgrading")
-    return set(db.execute(stmt).scalars().all())
