@@ -80,9 +80,28 @@ def update_template(db: Session, template_id: int, data: TemplateUpdate) -> Opti
     for key, value in update_data.items():
         setattr(template, key, value)
 
+    if "content" in update_data:
+        _recalculate_binding_hashes(db, template)
+
     db.commit()
     db.refresh(template)
     return template
+
+
+def _recalculate_binding_hashes(db: Session, template: ConfigTemplate):
+    stmt = select(TemplateBinding).where(TemplateBinding.template_id == template.id)
+    bindings = list(db.execute(stmt).scalars().all())
+    for binding in bindings:
+        device_stmt = select(Device).where(Device.device_id == binding.device_id)
+        device = db.execute(device_stmt).scalar_one_or_none()
+        if not device:
+            continue
+        variables = get_device_variables(device)
+        try:
+            rendered = render_template(template.content, variables)
+            binding.expected_config_hash = compute_config_hash(rendered)
+        except TemplateRenderError:
+            binding.expected_config_hash = None
 
 
 def delete_template(db: Session, template_id: int) -> bool:

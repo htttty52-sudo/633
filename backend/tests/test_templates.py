@@ -2,52 +2,10 @@ import pytest
 from datetime import datetime
 from unittest.mock import patch
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.database import Base, get_db
-from app.main import app
 from app.models import Device
 from app.template_models import ConfigTemplate, TemplateBinding, DeploymentTask
 from app.template_engine import render_template, compute_config_hash, validate_template_syntax, TemplateRenderError
-
-SQLALCHEMY_TEST_URL = "sqlite://"
-
-engine = create_engine(SQLALCHEMY_TEST_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
-
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-
-@pytest.fixture
-def db_session():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 @pytest.fixture
@@ -134,6 +92,23 @@ class TestTemplateCRUD:
         })
         assert resp.status_code == 200
         assert resp.json()["description"] == "Updated description"
+
+    def test_update_template_recalculates_binding_hashes(self, client, sample_device, sample_template):
+        template_id = sample_template["id"]
+        bind_resp = client.post("/api/bindings/", json={
+            "template_id": template_id,
+            "device_id": sample_device,
+        })
+        old_hash = bind_resp.json()["expected_config_hash"]
+
+        client.put(f"/api/templates/{template_id}", json={
+            "content": "new_field: \"{{ device_id }}\"\nextra: \"{{ model }}\"",
+        })
+
+        compare_resp = client.get(f"/api/bindings/{bind_resp.json()['id']}/compare")
+        new_hash = compare_resp.json()["expected_config_hash"]
+        assert new_hash is not None
+        assert new_hash != old_hash
 
     def test_delete_template(self, client, sample_template):
         template_id = sample_template["id"]

@@ -391,6 +391,22 @@ body {
   border-color: #1890ff;
 }
 
+.yaml-editor-error {
+  border-color: #ff4d4f !important;
+  box-shadow: 0 0 0 2px rgba(255, 77, 79, 0.15);
+}
+
+.yaml-live-error {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #ff4d4f;
+  font-family: 'Consolas', monospace;
+}
+
 .editor-actions {
   display: flex;
   gap: 8px;
@@ -558,6 +574,51 @@ body {
   border-radius: 3px;
 }
 
+.render-error .error-hint code.var-tag {
+  display: inline-block;
+  margin: 2px 4px;
+  padding: 1px 6px;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #333;
+}
+
+.render-error .error-location {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #fff;
+  border-radius: 4px;
+  border-left: 3px solid #ff4d4f;
+  font-size: 13px;
+  font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-line-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  background: #ff4d4f;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.preview-vars {
+  margin-left: 12px;
+  font-size: 11px;
+  color: #999;
+}
+
+.modal-wide {
+  width: 560px;
+}
+
 /* Deployment History */
 .deployment-history-row td {
   padding: 8px 16px !important;
@@ -568,6 +629,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.deployment-history-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 2px;
+}
+
+.deployment-more {
+  font-size: 11px;
+  color: #999;
+  padding: 2px 8px;
 }
 
 .deployment-item {

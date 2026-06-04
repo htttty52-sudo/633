@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchDevices } from './api'
 import {
   fetchTemplates, createTemplate, updateTemplate, deleteTemplate,
   renderPreview, validateTemplate,
-  createBinding, fetchBindings, deleteBinding, compareBinding,
+  createBinding, fetchBindings, deleteBinding,
   createDeployment, fetchDeployments,
 } from './templateApi'
 
@@ -102,7 +102,26 @@ export default function TemplatesPage() {
 function CreateTemplateModal({ onClose, onCreated }) {
   const [form, setForm] = useState({ name: '', description: '', content: '' })
   const [error, setError] = useState('')
+  const [yamlError, setYamlError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const validateTimer = useRef(null)
+
+  const handleContentChange = (value) => {
+    setForm({ ...form, content: value })
+    if (validateTimer.current) clearTimeout(validateTimer.current)
+    if (!value.trim()) {
+      setYamlError(null)
+      return
+    }
+    validateTimer.current = setTimeout(async () => {
+      try {
+        const result = await validateTemplate(value)
+        setYamlError(result.valid ? null : result.error)
+      } catch {
+        setYamlError(null)
+      }
+    }, 500)
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -124,7 +143,7 @@ function CreateTemplateModal({ onClose, onCreated }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h2>创建配置模板</h2>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
@@ -146,12 +165,15 @@ function CreateTemplateModal({ onClose, onCreated }) {
           <div className="form-group">
             <label>模板内容 (YAML + Jinja2)</label>
             <textarea
-              className="yaml-editor"
+              className={`yaml-editor ${yamlError ? 'yaml-editor-error' : ''}`}
               value={form.content}
-              onChange={(e) => setForm({ ...form, content: e.target.value })}
+              onChange={(e) => handleContentChange(e.target.value)}
               placeholder={'hostname: "{{ device_id }}"\nmodel: "{{ model }}"\nkernel: "{{ kernel_version }}"'}
               rows={10}
             />
+            {yamlError && (
+              <div className="yaml-live-error">{yamlError}</div>
+            )}
           </div>
           {error && <div className="error-msg">{error}</div>}
           <div className="modal-actions">
@@ -173,15 +195,16 @@ function TemplateDetail({ template, onUpdated }) {
   const [selectedDevice, setSelectedDevice] = useState('')
   const [previewResult, setPreviewResult] = useState(null)
   const [previewError, setPreviewError] = useState(null)
-  const [validateResult, setValidateResult] = useState(null)
+  const [yamlError, setYamlError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [deployments, setDeployments] = useState({})
+  const validateTimer = useRef(null)
 
   useEffect(() => {
     setContent(template.content)
     setPreviewResult(null)
     setPreviewError(null)
-    setValidateResult(null)
+    setYamlError(null)
     loadBindings()
     loadDevices()
   }, [template.id])
@@ -204,25 +227,33 @@ function TemplateDetail({ template, onUpdated }) {
     }
   }
 
+  const handleContentChange = (value) => {
+    setContent(value)
+    if (validateTimer.current) clearTimeout(validateTimer.current)
+    if (!value.trim()) {
+      setYamlError(null)
+      return
+    }
+    validateTimer.current = setTimeout(async () => {
+      try {
+        const result = await validateTemplate(value)
+        setYamlError(result.valid ? null : result.error)
+      } catch {
+        setYamlError(null)
+      }
+    }, 500)
+  }
+
   const handleSave = async () => {
     setSaving(true)
     try {
       const updated = await updateTemplate(template.id, { content })
       onUpdated(updated)
-      setValidateResult(null)
+      await loadBindings()
     } catch (err) {
       alert('保存失败: ' + (err.response?.data?.detail || err.message))
     } finally {
       setSaving(false)
-    }
-  }
-
-  const handleValidate = async () => {
-    try {
-      const result = await validateTemplate(content)
-      setValidateResult(result)
-    } catch (err) {
-      setValidateResult({ valid: false, error: '验证请求失败' })
     }
   }
 
@@ -267,7 +298,7 @@ function TemplateDetail({ template, onUpdated }) {
       const task = await createDeployment(bindingId)
       setDeployments((prev) => ({
         ...prev,
-        [bindingId]: [...(prev[bindingId] || []), task],
+        [bindingId]: [task, ...(prev[bindingId] || [])],
       }))
       await loadBindings()
     } catch (err) {
@@ -295,22 +326,19 @@ function TemplateDetail({ template, onUpdated }) {
       <div className="detail-section">
         <h4>模板内容</h4>
         <textarea
-          className="yaml-editor"
+          className={`yaml-editor ${yamlError ? 'yaml-editor-error' : ''}`}
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => handleContentChange(e.target.value)}
           rows={12}
         />
+        {yamlError && (
+          <div className="yaml-live-error">{yamlError}</div>
+        )}
         <div className="editor-actions">
           <button className="btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
+            {saving ? '保存中...' : '保存（更新绑定哈希）'}
           </button>
-          <button className="btn-secondary" onClick={handleValidate}>验证语法</button>
         </div>
-        {validateResult && (
-          <div className={`validate-result ${validateResult.valid ? 'valid' : 'invalid'}`}>
-            {validateResult.valid ? '语法正确' : `语法错误: ${validateResult.error}`}
-          </div>
-        )}
       </div>
 
       <div className="detail-section">
@@ -342,7 +370,7 @@ function TemplateDetail({ template, onUpdated }) {
                   onPreview={() => handlePreview(b.device_id)}
                   onDeploy={() => handleDeploy(b.id)}
                   onUnbind={() => handleUnbind(b.id)}
-                  onShowHistory={() => loadDeploymentHistory(b.id)}
+                  onLoadHistory={() => loadDeploymentHistory(b.id)}
                   deployments={deployments[b.id] || []}
                 />
               ))}
@@ -358,6 +386,9 @@ function TemplateDetail({ template, onUpdated }) {
             <div className="preview-panel">
               <div className="preview-meta">
                 <span>Hash: <code>{previewResult.config_hash.substring(0, 16)}...</code></span>
+                <span className="preview-vars">
+                  注入变量: {Object.entries(previewResult.variables_used).map(([k, v]) => `${k}="${v}"`).join(', ')}
+                </span>
               </div>
               <pre className="rendered-output">{previewResult.rendered_content}</pre>
             </div>
@@ -365,19 +396,24 @@ function TemplateDetail({ template, onUpdated }) {
           {previewError && (
             <div className="render-error">
               <div className="error-type">
-                {previewError.error_type === 'syntax_error' && '模板语法错误'}
-                {previewError.error_type === 'missing_variable' && '变量未定义'}
+                {previewError.error_type === 'syntax_error' && 'Jinja2 模板语法错误'}
+                {previewError.error_type === 'missing_variable' && 'Jinja2 变量未定义'}
                 {previewError.error_type === 'invalid_yaml_output' && '渲染结果不是有效YAML'}
                 {previewError.error_type === 'request_error' && '请求错误'}
               </div>
               <div className="error-message">{previewError.message}</div>
-              {previewError.details?.available_variables && (
-                <div className="error-hint">
-                  可用变量: {previewError.details.available_variables.join(', ')}
+              {previewError.details?.line && (
+                <div className="error-location">
+                  <span className="error-line-badge">Line {previewError.details.line}</span>
+                  <span>{previewError.details.description}</span>
                 </div>
               )}
-              {previewError.details?.line && (
-                <div className="error-hint">错误位置: 第 {previewError.details.line} 行</div>
+              {previewError.details?.available_variables && (
+                <div className="error-hint">
+                  <strong>可用变量:</strong> {previewError.details.available_variables.map((v) => (
+                    <code key={v} className="var-tag">{`{{ ${v} }}`}</code>
+                  ))}
+                </div>
               )}
             </div>
           )}
@@ -387,14 +423,13 @@ function TemplateDetail({ template, onUpdated }) {
   )
 }
 
-function BindingRow({ binding, onPreview, onDeploy, onUnbind, onShowHistory, deployments }) {
-  const [showHistory, setShowHistory] = useState(false)
+function BindingRow({ binding, onPreview, onDeploy, onUnbind, onLoadHistory, deployments }) {
+  const [expanded, setExpanded] = useState(true)
   const isMatch = binding.expected_config_hash && binding.expected_config_hash === binding.current_config_hash
 
-  const handleToggleHistory = () => {
-    if (!showHistory) onShowHistory()
-    setShowHistory(!showHistory)
-  }
+  useEffect(() => {
+    onLoadHistory()
+  }, [])
 
   return (
     <>
@@ -412,23 +447,31 @@ function BindingRow({ binding, onPreview, onDeploy, onUnbind, onShowHistory, dep
         <td className="binding-actions">
           <button className="btn-sm btn-secondary" onClick={onPreview}>预览</button>
           <button className="btn-sm btn-primary" onClick={onDeploy}>下发</button>
-          <button className="btn-sm btn-secondary" onClick={handleToggleHistory}>
-            {showHistory ? '隐藏记录' : '下发记录'}
-          </button>
           <button className="btn-sm btn-danger" onClick={onUnbind}>解绑</button>
+          {deployments.length > 0 && (
+            <button className="btn-sm btn-secondary" onClick={() => setExpanded(!expanded)}>
+              {expanded ? '收起' : `记录(${deployments.length})`}
+            </button>
+          )}
         </td>
       </tr>
-      {showHistory && deployments.length > 0 && (
+      {expanded && deployments.length > 0 && (
         <tr className="deployment-history-row">
           <td colSpan="3">
             <div className="deployment-history">
-              {deployments.map((d) => (
+              <div className="deployment-history-title">最近下发任务</div>
+              {deployments.slice(0, 5).map((d) => (
                 <div key={d.id} className={`deployment-item deploy-${d.status}`}>
-                  <span className={`deploy-badge ${d.status}`}>{d.status === 'success' ? '成功' : d.status === 'failed' ? '失败' : '进行中'}</span>
+                  <span className={`deploy-badge ${d.status}`}>
+                    {d.status === 'success' ? '成功' : d.status === 'failed' ? '失败' : '进行中'}
+                  </span>
                   <span className="deploy-time">{new Date(d.created_at).toLocaleString('zh-CN')}</span>
                   {d.error_message && <span className="deploy-error">{d.error_message}</span>}
                 </div>
               ))}
+              {deployments.length > 5 && (
+                <div className="deployment-more">...共 {deployments.length} 条记录</div>
+              )}
             </div>
           </td>
         </tr>
