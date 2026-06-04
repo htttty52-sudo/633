@@ -16,15 +16,23 @@ scheduler = BackgroundScheduler()
 
 def simulate_heartbeat():
     """Simulate device heartbeats: only update last_heartbeat for devices still within the timeout window.
-    Devices that have already timed out won't randomly come back online."""
+    Devices that have already timed out won't randomly come back online.
+    Devices currently being upgraded always get heartbeat updated."""
     db = SessionLocal()
     try:
+        from app.ota_crud import get_upgrading_device_ids
+        upgrading_ids = get_upgrading_device_ids(db)
+
         devices = db.execute(select(Device)).scalars().all()
         if not devices:
             return
 
         now = datetime.utcnow()
         for device in devices:
+            if device.device_id in upgrading_ids:
+                device.last_heartbeat = now
+                continue
+
             elapsed = (now - device.last_heartbeat).total_seconds()
             if elapsed < HEARTBEAT_TIMEOUT:
                 # Device is within the threshold - randomly decide if it sends a heartbeat

@@ -747,3 +747,232 @@ body {
   color: #999;
   font-style: italic;
 }
+
+/* OTA Page */
+.ota-page {
+  margin-top: 8px;
+}
+
+.ota-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.tab-btn {
+  padding: 8px 24px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px 4px 0 0;
+  background: #fafafa;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  border-color: #1890ff;
+  color: #1890ff;
+}
+
+.tab-btn.active {
+  background: #fff;
+  border-bottom-color: #fff;
+  color: #1890ff;
+  font-weight: 600;
+}
+
+.ota-section {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.section-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.section-toolbar h3 {
+  font-size: 16px;
+  color: #333;
+}
+
+.hash-cell {
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  color: #666;
+}
+
+.empty-cell {
+  text-align: center;
+  color: #999;
+  padding: 24px !important;
+}
+
+/* OTA Status Badges */
+.status-pending {
+  background: #fffbe6;
+  color: #faad14;
+  border: 1px solid #ffe58f;
+}
+
+.status-upgrading {
+  background: #e6f7ff;
+  color: #1890ff;
+  border: 1px solid #91d5ff;
+}
+
+.status-success {
+  background: #f6ffed;
+  color: #52c41a;
+  border: 1px solid #b7eb8f;
+}
+
+.status-failed {
+  background: #fff2f0;
+  color: #ff4d4f;
+  border: 1px solid #ffccc7;
+}
+
+/* Task Detail */
+.task-detail {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.task-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.task-header h3 {
+  font-size: 18px;
+}
+
+.task-info {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 20px;
+  font-size: 14px;
+  color: #555;
+}
+
+.batch-progress {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.batch-step {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  text-align: center;
+  background: #fafafa;
+  transition: all 0.2s;
+}
+
+.batch-step.batch-active {
+  border-color: #1890ff;
+  background: #e6f7ff;
+}
+
+.batch-step.batch-done {
+  border-color: #52c41a;
+  background: #f6ffed;
+}
+
+.batch-label {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.batch-size {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.batch-stats {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.stat-success {
+  font-size: 11px;
+  color: #52c41a;
+  font-weight: 500;
+}
+
+.stat-failed {
+  font-size: 11px;
+  color: #ff4d4f;
+  font-weight: 500;
+}
+
+.stat-pending {
+  font-size: 11px;
+  color: #faad14;
+  font-weight: 500;
+}
+
+.task-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.error-cell {
+  font-size: 12px;
+  color: #ff4d4f;
+  max-width: 200px;
+  word-break: break-word;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #1890ff;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+}
+
+.btn-link:hover {
+  color: #40a9ff;
+  text-decoration: underline;
+}
+
+.form-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.form-group textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.modal h3 {
+  margin-bottom: 16px;
+  font-size: 18px;
+}
