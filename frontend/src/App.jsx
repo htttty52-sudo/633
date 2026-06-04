@@ -2,6 +2,7 @@ import { NavLink, Routes, Route } from 'react-router-dom'
 import DevicesPage from './DevicesPage'
 import TemplatesPage from './TemplatesPage'
 import OtaPage from './OtaPage'
+import DashboardPage from './DashboardPage'
 
 export default function App() {
   return (
@@ -18,6 +19,9 @@ export default function App() {
           <NavLink to="/ota" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             OTA升级
           </NavLink>
+          <NavLink to="/dashboard" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+            系统构建看板
+          </NavLink>
         </nav>
       </header>
 
@@ -25,6 +29,7 @@ export default function App() {
         <Route path="/" element={<DevicesPage />} />
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/ota" element={<OtaPage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
       </Routes>
     </div>
   )

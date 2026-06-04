@@ -976,3 +976,275 @@ body {
   margin-bottom: 16px;
   font-size: 18px;
 }
+
+/* ===== Dashboard Page ===== */
+.dashboard-page {
+  margin-top: 8px;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.page-header h2 {
+  font-size: 20px;
+  color: #1a1a1a;
+}
+
+.dashboard-section {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.dashboard-section h3 {
+  font-size: 16px;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.section-desc {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 16px;
+}
+
+.dashboard-empty {
+  text-align: center;
+  padding: 32px;
+  color: #999;
+}
+
+/* Heatmap */
+.heatmap-container {
+  overflow-x: auto;
+}
+
+.heatmap-grid {
+  display: grid;
+  gap: 3px;
+  min-width: fit-content;
+}
+
+.heatmap-corner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #888;
+  font-weight: 500;
+}
+
+.heatmap-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #555;
+  padding: 4px;
+  white-space: nowrap;
+}
+
+.heatmap-row-header {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #555;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.heatmap-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  min-width: 52px;
+  min-height: 44px;
+  cursor: default;
+  transition: transform 0.1s;
+}
+
+.heatmap-cell:hover {
+  transform: scale(1.05);
+  z-index: 1;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.legend-label {
+  color: #666;
+  margin-right: 4px;
+}
+
+.legend-item {
+  display: inline-block;
+  padding: 2px 12px;
+  border-radius: 3px;
+  color: #fff;
+  font-weight: 500;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Drift Section */
+.drift-section {
+  margin-top: 8px;
+}
+
+.drift-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.drift-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 24px;
+  background: #fafafa;
+  border-radius: 6px;
+  min-width: 100px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.drift-red { color: #ff4d4f; }
+.drift-green { color: #52c41a; }
+.drift-gray { color: #999; }
+
+.drift-filter {
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.drift-filter label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.drift-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.drift-table th,
+.drift-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.drift-table th {
+  background: #fafafa;
+  font-weight: 600;
+  color: #555;
+  font-size: 12px;
+}
+
+.drift-row {
+  background: #fff2f0;
+}
+
+.hash-cell {
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  color: #666;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.badge-drift {
+  background: #fff2f0;
+  color: #ff4d4f;
+  border: 1px solid #ffccc7;
+}
+
+.badge-ok {
+  background: #f6ffed;
+  color: #52c41a;
+  border: 1px solid #b7eb8f;
+}
+
+.badge-unbound {
+  background: #f5f5f5;
+  color: #999;
+  border: 1px solid #d9d9d9;
+}
+
+.drift-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.drift-pagination button {
+  padding: 6px 14px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.drift-pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.drift-pagination span {
+  font-size: 13px;
+  color: #666;
+}
+
+/* Worker Section */
+.worker-section {
+  margin-top: 8px;
+}
+
+.worker-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.worker-table {
+  max-width: 600px;
+}

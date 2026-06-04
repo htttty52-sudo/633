@@ -51,6 +51,7 @@ class OtaDeviceTask(Base):
     previous_version: Mapped[str] = mapped_column(String(64), nullable=False)
     target_version: Mapped[str] = mapped_column(String(64), nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
     error_message: Mapped[str] = mapped_column(String(512), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)

@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import Device
-from app.config import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
+from app.config import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, BATCH_COMPLETION_CHECK_INTERVAL
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ scheduler = BackgroundScheduler(
     executors={
         "heartbeat": ThreadPoolExecutor(max_workers=2),
         "default": ThreadPoolExecutor(max_workers=2),
+        "batch_check": ThreadPoolExecutor(max_workers=1),
     }
 )
 
@@ -105,8 +106,27 @@ def start_scheduler():
         id="offline_check",
         executor="default",
     )
+    scheduler.add_job(
+        _check_batch_completion_job, "interval",
+        seconds=BATCH_COMPLETION_CHECK_INTERVAL,
+        id="batch_completion_check",
+        executor="batch_check",
+    )
     scheduler.start()
-    logger.info(f"Scheduler started: heartbeat every {HEARTBEAT_INTERVAL}s, timeout {HEARTBEAT_TIMEOUT}s")
+    logger.info(f"Scheduler started: heartbeat every {HEARTBEAT_INTERVAL}s, timeout {HEARTBEAT_TIMEOUT}s, batch check every {BATCH_COMPLETION_CHECK_INTERVAL}s")
+
+
+def _check_batch_completion_job():
+    """Wrapper for check_batch_completion that manages its own DB session."""
+    db = SessionLocal()
+    try:
+        from app.ota_crud import check_batch_completion
+        check_batch_completion(db)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Batch completion check error: {e}")
+    finally:
+        db.close()
 
 
 def stop_scheduler():

@@ -1,6 +1,7 @@
 import math
 import random
 import hashlib
+import logging
 import threading
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,11 @@ from app.models import Device
 from app.ota_models import Firmware, OtaTask, OtaDeviceTask
 from app.ota_schemas import FirmwareCreate, OtaTaskCreate
 from app.config import OTA_UPGRADE_SUCCESS_RATE, OTA_BATCH_TIMEOUT, OTA_RETRY_BASE_DELAY
+from app.redis_client import get_redis
+from app.redis_streams import publish_device_task
+from app.idempotency import generate_idempotency_key
+
+logger = logging.getLogger(__name__)
 
 
 class FirmwareNotFoundError(Exception):
@@ -216,7 +222,7 @@ def get_ota_tasks(db: Session, status: Optional[str] = None,
     return tasks, total
 
 
-# --- Batch confirm with timeout ---
+# --- Batch confirm with distributed processing ---
 
 def confirm_batch(db: Session, task_id: int, timeout: Optional[float] = None) -> OtaTask:
     task = get_ota_task(db, task_id)
@@ -228,7 +234,6 @@ def confirm_batch(db: Session, task_id: int, timeout: Optional[float] = None) ->
     if task.status != expected_status:
         raise InvalidTaskStateError(task_id, task.status, expected_status)
 
-    batch_timeout = timeout if timeout is not None else OTA_BATCH_TIMEOUT
     task.status = f"batch{current}_running"
 
     stmt = select(OtaDeviceTask).where(
@@ -238,54 +243,64 @@ def confirm_batch(db: Session, task_id: int, timeout: Optional[float] = None) ->
     )
     device_tasks = list(db.execute(stmt).scalars().all())
 
-    _refresh_upgrading_cache(db)
-
-    batch_has_failure = False
-    batch_timed_out = False
-    failure_reason = None
-    batch_start = time.monotonic()
-
+    r = get_redis()
     for dt in device_tasks:
-        elapsed = time.monotonic() - batch_start
-        if elapsed >= batch_timeout:
-            batch_timed_out = True
-            failure_reason = f"Batch timeout: exceeded {batch_timeout}s limit"
-            dt.status = "failed"
-            dt.error_message = failure_reason
-            dt.completed_at = datetime.utcnow()
-            dt.attempt_count += 1
-            batch_has_failure = True
-            continue
-
-        device_stmt = select(Device).where(Device.device_id == dt.device_id)
-        device = db.execute(device_stmt).scalar_one_or_none()
-
         dt.status = "upgrading"
         dt.started_at = datetime.utcnow()
         dt.attempt_count += 1
+        idem_key = generate_idempotency_key(dt.id, dt.attempt_count)
+        dt.idempotency_key = idem_key
 
-        if random.random() < OTA_UPGRADE_SUCCESS_RATE:
-            dt.status = "success"
-            dt.completed_at = datetime.utcnow()
-            if device:
-                device.kernel_version = dt.target_version
-        else:
-            dt.status = "failed"
-            failure_reason = random.choice(OTA_FAILURE_MESSAGES)
-            dt.error_message = failure_reason
-            dt.completed_at = datetime.utcnow()
-            batch_has_failure = True
+    db.commit()
 
-    if batch_has_failure:
-        _rollback_entire_batch(db, task_id, current, failure_reason)
-        task.status = f"batch{current}_failed"
-    else:
-        _advance_task_state(task)
+    # Publish to Redis Stream for distributed workers
+    for dt in device_tasks:
+        publish_device_task(r, dt.id, dt.idempotency_key)
 
     _refresh_upgrading_cache(db)
-    db.commit()
     db.refresh(task)
     return task
+
+
+def check_batch_completion(db: Session):
+    """Check if running batches have all device tasks in terminal state.
+    Called periodically by scheduler."""
+    stmt = select(OtaTask).where(OtaTask.status.like("%_running"))
+    running_tasks = list(db.execute(stmt).scalars().all())
+
+    for task in running_tasks:
+        batch = task.current_batch
+
+        # Count non-terminal device tasks
+        pending_count = db.execute(
+            select(func.count()).select_from(OtaDeviceTask).where(
+                OtaDeviceTask.ota_task_id == task.id,
+                OtaDeviceTask.batch_number == batch,
+                OtaDeviceTask.status.in_(["upgrading", "pending"]),
+            )
+        ).scalar()
+
+        if pending_count > 0:
+            continue
+
+        # All done — check for failures
+        failed_count = db.execute(
+            select(func.count()).select_from(OtaDeviceTask).where(
+                OtaDeviceTask.ota_task_id == task.id,
+                OtaDeviceTask.batch_number == batch,
+                OtaDeviceTask.status == "failed",
+            )
+        ).scalar()
+
+        if failed_count > 0:
+            _rollback_entire_batch(db, task.id, batch, "batch failure detected")
+            task.status = f"batch{batch}_failed"
+        else:
+            _advance_task_state(task)
+
+        _refresh_upgrading_cache(db)
+        db.commit()
+        logger.info(f"Batch {batch} of task {task.id} completed, new status: {task.status}")
 
 
 def _rollback_entire_batch(db: Session, task_id: int, batch_number: int, reason: str):
